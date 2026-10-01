@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<!--
+  Author: Kevin Tigges
+  Purpose: Plain-language, multi-page explanation of the LIA (Log Intelligence
+           Assistant) Security Copilot proof-of-concept -- what it is, what
+           its pieces do, and how a request actually flows through it.
+  Written for a reader with zero prior context on Security Copilot, agents,
+  or KQL -- every component is explained from scratch.
+  This page is self-contained: no external scripts, fonts, or network calls.
+  All styling is inline. Opening it does not transmit data anywhere or run
+  remote code.
+  Produced independently; not reviewed or endorsed by Microsoft.
+-->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LIA -- Guardrails</title>
+<style>
+:root{
+  --navy:#0b2a4a; --royal:#1565c0; --blue:#0067b8; --ink:#1b2530; --muted:#5b6b7c; --line:#d9e1ea;
+  --panel:#f5f8fb; --good:#1a7f4e; --warn:#b25c00; --bad:#a32424;
+}
+*{box-sizing:border-box;}
+html,body{height:100%;}
+body{margin:0; background:#fff; color:var(--ink); display:flex; flex-direction:column; height:100vh; overflow:hidden;
+  font:15px/1.6 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+header.top{padding:26px 32px 0; }
+header.top h1{margin:0; font-size:24px; color:var(--navy); font-weight:700;}
+header.top .tag{font-size:12.5px; color:var(--muted); margin-top:2px;}
+nav.tabs{display:flex; gap:4px; padding:18px 32px 0; border-bottom:2px solid var(--line); flex-wrap:wrap;}
+nav.tabs a{color:var(--muted); text-decoration:none; font-size:13.5px; font-weight:700;
+  padding:10px 16px; border-bottom:3px solid transparent; margin-bottom:-2px;}
+nav.tabs a:hover{color:var(--navy);}
+nav.tabs a.active{color:var(--navy); border-bottom:3px solid var(--blue);}
+main{max-width:900px; margin:0 auto; padding:30px 24px 60px; flex:1 1 auto; min-height:0; overflow-y:auto; width:100%;}
+h1.page-title{font-size:26px; color:var(--navy); margin:0 0 4px;}
+.subtitle{color:var(--muted); font-size:14px; margin:0 0 22px;}
+h2{font-size:19px; margin:30px 0 8px; color:var(--navy); border-bottom:2px solid var(--line); padding-bottom:6px;}
+h2:first-of-type{margin-top:6px;}
+h3{font-size:15.5px; margin:18px 0 6px; color:var(--ink);}
+p{margin:8px 0;}
+.note{color:var(--muted); font-size:13.5px;}
+.callout{background:var(--panel); border-left:4px solid var(--blue); padding:13px 17px; margin:14px 0; border-radius:4px;}
+.analogy{background:#fbf6e8; border-left:4px solid #c8930a; padding:12px 16px; margin:12px 0; border-radius:4px; font-size:14px;}
+.analogy b{color:#7a5c00;}
+table{width:100%; border-collapse:collapse; margin:12px 0 22px; font-size:13.5px;}
+th,td{border:1px solid var(--line); padding:8px 10px; text-align:left; vertical-align:top;}
+th{background:var(--panel); color:var(--navy); font-weight:600;}
+code{background:var(--panel); border:1px solid var(--line); border-radius:3px; padding:1px 5px; font-size:12.5px;}
+ul{margin:8px 0; padding-left:22px;} li{margin:5px 0;}
+.status-pill{display:inline-block; padding:2px 8px; border-radius:10px; font-size:12px; font-weight:600;}
+.status-good{background:#e4f3ea; color:var(--good);}
+.status-warn{background:#fdf0e0; color:var(--warn);}
+.status-bad{background:#fde8e8; color:var(--bad);}
+.comp-block{border:1px solid var(--line); border-radius:8px; padding:18px 20px; margin:18px 0; background:#fff;}
+.comp-block .num-badge{display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px;
+  border-radius:50%; background:var(--navy); color:#fff; font-size:13px; font-weight:700; margin-right:8px;}
+.comp-block h3{display:flex; align-items:center; margin:0 0 10px; font-size:17px; color:var(--navy);}
+.pagenav{display:flex; justify-content:space-between; margin-top:44px; border-top:1px solid var(--line); padding-top:16px; font-size:13.5px;}
+.pagenav a{color:var(--blue); text-decoration:none; font-weight:600;}
+.pagenav a:hover{text-decoration:underline;}
+footer.navybar{background:var(--royal); color:#d7e4f2; padding:16px 32px; flex-shrink:0;
+  display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;}
+footer.navybar .disclaimer{font-size:11px; color:#9fb6cc; max-width:600px;}
+.ms-logo{display:flex; align-items:center; gap:8px;}
+.ms-logo span{font-size:13px; font-weight:600; color:#fff;}
+.flowchart{width:100%; height:auto; margin:10px 0 6px;}
+.flow-key{display:flex; gap:18px; flex-wrap:wrap; font-size:12.5px; color:var(--muted); margin:6px 0 20px;}
+.flow-key span{display:inline-flex; align-items:center; gap:6px;}
+.flow-key i{width:12px; height:12px; border-radius:2px; display:inline-block;}
+.topbar{background:var(--royal); padding:10px 32px; display:flex; align-items:center; justify-content:flex-end;}
+.topbar .ms-logo{color:#fff;}
+.topbar .ms-logo span{color:#fff;}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <div class="ms-logo">
+    <svg width="20" height="20" viewBox="0 0 21 21" xmlns="http://www.w3.org/2000/svg"><rect x="1" y="1" width="9" height="9" fill="#f25022"/><rect x="11" y="1" width="9" height="9" fill="#7fba00"/><rect x="1" y="11" width="9" height="9" fill="#00a4ef"/><rect x="11" y="11" width="9" height="9" fill="#ffb900"/></svg>
+    <span>Microsoft</span>
+  </div>
+</div>
+<header class="top">
+  <h1>LIA -- Log Intelligence Assistant</h1>
+  <div class="tag">How it works, explained from scratch</div>
+</header>
+<nav class="tabs">
+    <a href="index.html" class="">Overview</a>
+    <a href="components.html" class="">Components</a>
+    <a href="flow.html" class="">Flow</a>
+    <a href="guardrails.html" class="active">Guardrails</a>
+    <a href="glossary.html" class="">Glossary</a>
+</nav>
+<main>
+
+<h1 class="page-title">Guardrails</h1>
+<p class="subtitle">Every important rule is enforced twice -- once in the instructions, once in the search itself -- so it can't be talked around.</p>
+
+<p>Here's the thing about only relying on written instructions for an AI:
+they can be misread, or a weird enough input can trip it up. So none of
+the important limits here live only in the instructions. They're also
+built directly into the searches, which the AI can't edit or bypass no
+matter what.</p>
+
+<table>
+<tr><th>Rule</th><th>In the agent's instructions</th><th>In the search itself</th></tr>
+<tr><td>Time window under 24 hours, end after start</td><td>Ask a clarifying question if violated</td><td>Search refuses and returns a diagnostic row</td></tr>
+<tr><td>Exact identifier format</td><td>Ask, don't guess</td><td>Pattern check rejects malformed input</td></tr>
+<tr><td>Record limits</td><td>Reports truncation to the analyst</td><td>Hard caps: 150 rows per source, 1024-character detail fields</td></tr>
+<tr><td>One approved data set</td><td>Refuses other workspaces</td><td>Baked into the tool's setup, not something typed in</td></tr>
+<tr><td>Tool allow-list</td><td>Only 8 named tools in its skill list</td><td>The connector's allow-list rejects anything else</td></tr>
+<tr><td>Untrusted log text</td><td>Treats file names, URLs, command lines as data, never as instructions</td><td>Raw values confined to one "Details" field</td></tr>
+</table>
+
+<h2>How each data source gets graded</h2>
+<p>This part took some real thought -- "no results" can mean five different
+things, and the report needs to say which one it actually was.</p>
+<table>
+<tr><th>Label</th><th>What it means in plain terms</th></tr>
+<tr><td><span class="status-pill status-good">Observed</span></td><td>The search ran fine and found matching records.</td></tr>
+<tr><td><span class="status-pill status-warn">NotObserved</span></td><td>The search ran fine, the data's in range, there just weren't any matching records.</td></tr>
+<tr><td><span class="status-pill status-warn">Unavailable</span></td><td>That table doesn't exist here, doesn't apply, or the time window is too old to still be stored.</td></tr>
+<tr><td><span class="status-pill status-bad">AccessDenied</span></td><td>The analyst's own permissions blocked the search from running.</td></tr>
+<tr><td><span class="status-pill status-bad">QueryFailed</span></td><td>Something else broke -- a timeout, or a guard rule rejected the input.</td></tr>
+</table>
+<p>One thing worth knowing: if a device is outside an analyst's permission
+scope, the search can come back with zero rows and no error message at
+all. That would look exactly like "nothing happened" if LIA didn't call it
+out. So the report always adds a note that NotObserved only means "nothing
+visible to this analyst," not "nothing occurred."</p>
+
+<h2>What LIA will not do, on purpose</h2>
+<ul>
+<li><b>No remediation.</b> It can't isolate a device, disable a user, or
+change anything. Read-only, full stop.</li>
+<li><b>No free-form searches.</b> The AI can never write or run its own
+custom search, ever.</li>
+<li><b>No reaching outside the approved data set.</b> One workspace per
+deployment, no exceptions.</li>
+<li><b>No silent guessing.</b> Anything ambiguous stops the flow with a
+question instead of an assumption.</li>
+</ul>
+<div class="pagenav"><a href="flow.html">&larr; Flow</a><a href="glossary.html">Glossary &rarr;</a></div>
+</main>
+<footer class="navybar"></footer>
+</body>
+</html>

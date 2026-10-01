@@ -1,0 +1,131 @@
+// Tool: get_user_authentication_timeline
+// Parameters: {UserIdentifier}, {StartTimeUtc}, {EndTimeUtc}, {Workspace}
+// Sign-in and logon timeline for one user (max 24h).
+let InputRaw = trim(@"\s", "{UserIdentifier}");
+let StartTimeUtc = todatetime("{StartTimeUtc}");
+let EndTimeUtc = todatetime("{EndTimeUtc}");
+let RequestedWorkspace = "{Workspace}";
+let MaxWindow = 24h;
+let MaxPerSource = 10;       // rows returned per SourceTable (earliest first)
+let MaxDetailsChars = 512;   // Details longer than this is cut and marked
+let IsUpn  = strlen(InputRaw) between (5 .. 256) and InputRaw matches regex @"^[A-Za-z0-9._%+'\-]+@[A-Za-z0-9.\-]+\.[A-Za-z][A-Za-z]+$";
+let IsSid  = array_length(split(InputRaw, "-")) between (3 .. 16) and InputRaw matches regex @"^S-1-[0-9]+(-[0-9]+)+$";
+let IsGuid = strlen(InputRaw) == 36
+             and substring(InputRaw, 8, 1) == "-" and substring(InputRaw, 13, 1) == "-"
+             and substring(InputRaw, 18, 1) == "-" and substring(InputRaw, 23, 1) == "-"
+             and InputRaw matches regex @"^[0-9a-fA-F-]+$";
+let GuardOk = isnotnull(StartTimeUtc) and isnotnull(EndTimeUtc)
+              and EndTimeUtc > StartTimeUtc
+              and (EndTimeUtc - StartTimeUtc) <= MaxWindow
+              and (IsUpn or IsSid or IsGuid);
+let Events = materialize(
+    union
+    (
+        SigninLogs
+        | where TimeGenerated >= StartTimeUtc and TimeGenerated < EndTimeUtc
+        | where (IsUpn and UserPrincipalName =~ InputRaw) or (IsGuid and UserId =~ InputRaw)
+        | project TimestampUtc = TimeGenerated, SourceTable = "SigninLogs",
+                  EventCategory = "Authentication",
+                  ActionType = iff(tostring(ResultType) == "0", "SignInSuccess", "SignInFailure"),
+                  User = UserPrincipalName, Device = tostring(DeviceDetail.displayName),
+                  IPAddress, RemoteUrl = "", RemoteDomain = "", FileName = "", SHA256 = "",
+                  ProcessName = "", ParentProcessName = "",
+                  AlertId = "", Severity = "", TechniqueId = "",
+                  SourceRecordId = strcat("SigninLogs|", Id),
+                  Details = tostring(bag_pack(
+                      "AppDisplayName", AppDisplayName, "ResultType", ResultType,
+                      "ResultDescription", ResultDescription,
+                      "ConditionalAccessStatus", ConditionalAccessStatus,
+                      "AuthenticationRequirement", AuthenticationRequirement,
+                      "Location", Location, "UserAgent", UserAgent,
+                      "RiskLevelDuringSignIn", RiskLevelDuringSignIn,
+                      "CorrelationId", CorrelationId))
+    ),
+    (
+        AADNonInteractiveUserSignInLogs
+        | where TimeGenerated >= StartTimeUtc and TimeGenerated < EndTimeUtc
+        | where (IsUpn and UserPrincipalName =~ InputRaw) or (IsGuid and UserId =~ InputRaw)
+        | project TimestampUtc = TimeGenerated, SourceTable = "AADNonInteractiveUserSignInLogs",
+                  EventCategory = "Authentication",
+                  ActionType = iff(tostring(ResultType) == "0", "NonInteractiveSignInSuccess", "NonInteractiveSignInFailure"),
+                  User = UserPrincipalName, Device = "",
+                  IPAddress, RemoteUrl = "", RemoteDomain = "", FileName = "", SHA256 = "",
+                  ProcessName = "", ParentProcessName = "",
+                  AlertId = "", Severity = "", TechniqueId = "",
+                  SourceRecordId = strcat("AADNonInteractiveUserSignInLogs|", Id),
+                  Details = tostring(bag_pack(
+                      "AppDisplayName", AppDisplayName, "ResultType", ResultType,
+                      "ResultDescription", ResultDescription,
+                      "ConditionalAccessStatus", ConditionalAccessStatus,
+                      "Location", Location, "UserAgent", UserAgent,
+                      "CorrelationId", CorrelationId))
+    ),
+    (
+        IdentityLogonEvents
+        | where TimeGenerated >= StartTimeUtc and TimeGenerated < EndTimeUtc
+        | where (IsUpn and AccountUpn =~ InputRaw)
+             or (IsGuid and AccountObjectId =~ InputRaw)
+             or (IsSid and AccountSid =~ InputRaw)
+        | project TimestampUtc = TimeGenerated, SourceTable = "IdentityLogonEvents",
+                  EventCategory = "Authentication", ActionType,
+                  User = iff(isnotempty(AccountUpn), AccountUpn, strcat(AccountDomain, @"\", AccountName)),
+                  Device = DeviceName, IPAddress, RemoteUrl = "", RemoteDomain = "",
+                  FileName = "", SHA256 = "", ProcessName = "", ParentProcessName = "",
+                  AlertId = "", Severity = "", TechniqueId = "",
+                  SourceRecordId = strcat("IdentityLogonEvents|", tostring(ReportId), "|", tostring(TimeGenerated)),
+                  Details = tostring(bag_pack(
+                      "Application", Application, "LogonType", LogonType,
+                      "Protocol", Protocol, "FailureReason", FailureReason,
+                      "DestinationDeviceName", DestinationDeviceName))
+    ),
+    (
+        DeviceLogonEvents
+        | where TimeGenerated >= StartTimeUtc and TimeGenerated < EndTimeUtc
+        | where IsSid and AccountSid =~ InputRaw
+        | project TimestampUtc = TimeGenerated, SourceTable = "DeviceLogonEvents",
+                  EventCategory = "Logon", ActionType,
+                  User = strcat(AccountDomain, @"\", AccountName),
+                  Device = DeviceName, IPAddress = RemoteIP, RemoteUrl = "", RemoteDomain = "",
+                  FileName = "", SHA256 = "",
+                  ProcessName = InitiatingProcessFileName,
+                  ParentProcessName = InitiatingProcessParentFileName,
+                  AlertId = "", Severity = "", TechniqueId = "",
+                  SourceRecordId = strcat("DeviceLogonEvents|", DeviceId, "|", tostring(ReportId), "|", tostring(TimeGenerated)),
+                  Details = tostring(bag_pack(
+                      "LogonType", LogonType, "FailureReason", FailureReason,
+                      "RemoteDeviceName", RemoteDeviceName, "DeviceId", DeviceId))
+    )
+    | where GuardOk
+    | extend Details = iff(strlen(Details) > MaxDetailsChars,
+                           strcat(substring(Details, 0, MaxDetailsChars), " ...[LIA: Details truncated]"),
+                           Details)
+);
+let TotalMatched = toscalar(Events | count);
+let PerSource = Events | summarize SourceMatched = count() by SourceTable;
+let Capped = materialize(
+    Events
+    | order by SourceTable asc, TimestampUtc asc
+    | extend SourceRank = row_number(1, prev(SourceTable) != SourceTable)
+    | where SourceRank <= MaxPerSource
+    | project-away SourceRank
+    | lookup kind=leftouter PerSource on SourceTable
+);
+let ReturnedCount = toscalar(Capped | count);
+let Diagnostic =
+    print TimestampUtc = datetime(null), SourceTable = "LIA_GUARD",
+          EventCategory = "Diagnostic", ActionType = "",
+          User = "", Device = "", IPAddress = "", RemoteUrl = "", RemoteDomain = "",
+          FileName = "", SHA256 = "", ProcessName = "", ParentProcessName = "",
+          AlertId = "", Severity = "", TechniqueId = "", SourceRecordId = "",
+          Details = "LIA guard: invalid UserIdentifier, unparseable time, EndTimeUtc not after StartTimeUtc, or interval exceeds MaxWindow"
+    | where not(GuardOk);
+union Capped, Diagnostic
+| extend TotalMatched = TotalMatched,
+         ReturnedCount = ReturnedCount,
+         ReturnedLimit = MaxPerSource,
+         // Truncated: this row's source had more than MaxPerSource matches.
+         // AnyTruncated: at least one source in this result was truncated.
+         Truncated = coalesce(SourceMatched, 0) > MaxPerSource,
+         AnyTruncated = TotalMatched > ReturnedCount,
+         Workspace = RequestedWorkspace
+| order by TimestampUtc asc

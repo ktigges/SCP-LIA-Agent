@@ -1,0 +1,50 @@
+// Tool: resolve_device
+// Parameters: {DeviceName}, {Workspace}
+// Defender XDR Advanced Hunting. Resolves hostname, FQDN, or DeviceId.
+let InputRaw = trim(@"\s", "{DeviceName}");
+let RequestedWorkspace = "{Workspace}";
+let Lookback = 30d;
+let MaxCandidates = 10;
+let IsDeviceId = strlen(InputRaw) == 40 and InputRaw matches regex @"^[0-9a-fA-F]+$";
+let IsHostname = InputRaw matches regex @"^[A-Za-z0-9][A-Za-z0-9\-]*(\.[A-Za-z0-9][A-Za-z0-9\-]*)*$";
+let GuardOk = strlen(InputRaw) between (1 .. 255) and (IsDeviceId or IsHostname);
+let InputLower = tolower(InputRaw);
+let Candidates =
+    DeviceInfo
+    | where TimeGenerated >= ago(Lookback)
+    | where GuardOk
+    | extend DeviceNameLower = tolower(DeviceName),
+             ShortNameLower = tolower(tostring(split(DeviceName, ".")[0]))
+    | where (IsDeviceId and DeviceId =~ InputRaw)
+         or (IsHostname and (DeviceNameLower == InputLower or ShortNameLower == InputLower))
+    | extend MatchType = case(
+        IsDeviceId, "DeviceId",
+        DeviceNameLower == InputLower, "ExactName",
+        "ShortName")
+    | summarize arg_max(TimeGenerated, DeviceName, OSPlatform, OSVersion, MachineGroup,
+                        OnboardingStatus, PublicIP, MatchType),
+                FirstSeenInLookback = min(TimeGenerated)
+        by DeviceId
+    | project DeviceId, DeviceName, OSPlatform, OSVersion, MachineGroup,
+              OnboardingStatus, PublicIP, MatchType,
+              LastSeenUtc = TimeGenerated, FirstSeenInLookback;
+let CandidateCount = toscalar(Candidates | count);
+let Diagnostic =
+    print DeviceId = "", DeviceName = "", OSPlatform = "", OSVersion = "",
+          MachineGroup = "", OnboardingStatus = "", PublicIP = "",
+          MatchType = iff(GuardOk, "None", "LIA_GUARD"), LastSeenUtc = datetime(null),
+          FirstSeenInLookback = datetime(null)
+    // Always return one status row when there is no candidate, so the agent can
+    // distinguish "no match" from an empty/failed result.
+    | where not(GuardOk) or CandidateCount == 0;
+union
+    (Candidates | top MaxCandidates by LastSeenUtc desc),
+    Diagnostic
+| extend CandidateCount = CandidateCount,
+         ResolutionStatus = case(
+            not(GuardOk), "LIA guard: identifier failed format validation",
+            CandidateCount == 0, "NoMatch",
+            CandidateCount == 1, "Resolved",
+            "Ambiguous"),
+         Workspace = RequestedWorkspace,
+         SourceTable = "DeviceInfo"

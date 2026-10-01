@@ -1,0 +1,170 @@
+// Tool: get_device_timeline
+// Parameters: {DeviceId}, {StartTimeUtc}, {EndTimeUtc}, {Workspace}
+// Endpoint activity timeline for one device (max 24h).
+let TargetDeviceId = tolower(trim(@"\s", "{DeviceId}"));
+let StartTimeUtc = todatetime("{StartTimeUtc}");
+let EndTimeUtc = todatetime("{EndTimeUtc}");
+let RequestedWorkspace = "{Workspace}";
+let MaxWindow = 24h;
+let MaxPerSource = 10;       // rows returned per SourceTable (earliest first)
+let MaxDetailsChars = 512;   // Details longer than this is cut and marked
+let GuardOk = isnotnull(StartTimeUtc) and isnotnull(EndTimeUtc)
+              and EndTimeUtc > StartTimeUtc
+              and (EndTimeUtc - StartTimeUtc) <= MaxWindow
+              and strlen(TargetDeviceId) == 40
+              and TargetDeviceId matches regex @"^[0-9a-f]+$";
+let FormatUser = (upn: string, domain: string, name: string) {
+    case(isnotempty(upn), upn,
+         isnotempty(name) and isnotempty(domain), strcat(domain, @"\", name),
+         name)
+};
+let DomainOf = (url: string) {
+    tolower(extract(@"^(?:[A-Za-z][A-Za-z0-9+.\-]*://)?(?:[^@/]*@)?([^/:?#\[\]]+)", 1, url))
+};
+let Events = materialize(
+    union
+    (
+        DeviceProcessEvents
+        | where TimeGenerated >= StartTimeUtc and TimeGenerated < EndTimeUtc
+        | where DeviceId =~ TargetDeviceId
+        | project TimestampUtc = TimeGenerated, SourceTable = "DeviceProcessEvents",
+                  EventCategory = "Process", ActionType,
+                  User = FormatUser(AccountUpn, AccountDomain, AccountName),
+                  Device = DeviceName, IPAddress = "", RemoteUrl = "", RemoteDomain = "",
+                  FileName, SHA256, ProcessName = FileName,
+                  ParentProcessName = InitiatingProcessFileName,
+                  AlertId = "", Severity = "", TechniqueId = "",
+                  SourceRecordId = strcat("DeviceProcessEvents|", DeviceId, "|", tostring(ReportId), "|", tostring(TimeGenerated)),
+                  Details = tostring(bag_pack(
+                      "ProcessCommandLine", ProcessCommandLine,
+                      "FolderPath", FolderPath,
+                      "InitiatingProcessCommandLine", InitiatingProcessCommandLine,
+                      "InitiatingProcessParentFileName", InitiatingProcessParentFileName))
+    ),
+    (
+        DeviceNetworkEvents
+        | where TimeGenerated >= StartTimeUtc and TimeGenerated < EndTimeUtc
+        | where DeviceId =~ TargetDeviceId
+        | project TimestampUtc = TimeGenerated, SourceTable = "DeviceNetworkEvents",
+                  EventCategory = "Network", ActionType,
+                  User = FormatUser(InitiatingProcessAccountUpn, InitiatingProcessAccountDomain, InitiatingProcessAccountName),
+                  Device = DeviceName, IPAddress = RemoteIP, RemoteUrl,
+                  RemoteDomain = DomainOf(RemoteUrl),
+                  FileName = "", SHA256 = InitiatingProcessSHA256,
+                  ProcessName = InitiatingProcessFileName,
+                  ParentProcessName = InitiatingProcessParentFileName,
+                  AlertId = "", Severity = "", TechniqueId = "",
+                  SourceRecordId = strcat("DeviceNetworkEvents|", DeviceId, "|", tostring(ReportId), "|", tostring(TimeGenerated)),
+                  Details = tostring(bag_pack(
+                      "RemotePort", RemotePort, "LocalIP", LocalIP,
+                      "Protocol", Protocol,
+                      "InitiatingProcessCommandLine", InitiatingProcessCommandLine))
+    ),
+    (
+        DeviceFileEvents
+        | where TimeGenerated >= StartTimeUtc and TimeGenerated < EndTimeUtc
+        | where DeviceId =~ TargetDeviceId
+        | project TimestampUtc = TimeGenerated, SourceTable = "DeviceFileEvents",
+                  EventCategory = "File", ActionType,
+                  User = FormatUser(InitiatingProcessAccountUpn, InitiatingProcessAccountDomain, InitiatingProcessAccountName),
+                  Device = DeviceName, IPAddress = RequestSourceIP,
+                  RemoteUrl = FileOriginUrl, RemoteDomain = DomainOf(FileOriginUrl),
+                  FileName, SHA256,
+                  ProcessName = InitiatingProcessFileName,
+                  ParentProcessName = InitiatingProcessParentFileName,
+                  AlertId = "", Severity = "", TechniqueId = "",
+                  SourceRecordId = strcat("DeviceFileEvents|", DeviceId, "|", tostring(ReportId), "|", tostring(TimeGenerated)),
+                  Details = tostring(bag_pack(
+                      "FolderPath", FolderPath,
+                      "PreviousFileName", PreviousFileName,
+                      "InitiatingProcessCommandLine", InitiatingProcessCommandLine))
+    ),
+    (
+        DeviceLogonEvents
+        | where TimeGenerated >= StartTimeUtc and TimeGenerated < EndTimeUtc
+        | where DeviceId =~ TargetDeviceId
+        | project TimestampUtc = TimeGenerated, SourceTable = "DeviceLogonEvents",
+                  EventCategory = "Logon", ActionType,
+                  User = FormatUser("", AccountDomain, AccountName),
+                  Device = DeviceName, IPAddress = RemoteIP, RemoteUrl = "", RemoteDomain = "",
+                  FileName = "", SHA256 = "",
+                  ProcessName = InitiatingProcessFileName,
+                  ParentProcessName = InitiatingProcessParentFileName,
+                  AlertId = "", Severity = "", TechniqueId = "",
+                  SourceRecordId = strcat("DeviceLogonEvents|", DeviceId, "|", tostring(ReportId), "|", tostring(TimeGenerated)),
+                  Details = tostring(bag_pack(
+                      "LogonType", LogonType, "AccountSid", AccountSid,
+                      "RemoteDeviceName", RemoteDeviceName,
+                      "FailureReason", FailureReason, "Protocol", Protocol))
+    ),
+    (
+        DeviceRegistryEvents
+        | where TimeGenerated >= StartTimeUtc and TimeGenerated < EndTimeUtc
+        | where DeviceId =~ TargetDeviceId
+        | project TimestampUtc = TimeGenerated, SourceTable = "DeviceRegistryEvents",
+                  EventCategory = "Registry", ActionType,
+                  User = FormatUser(InitiatingProcessAccountUpn, InitiatingProcessAccountDomain, InitiatingProcessAccountName),
+                  Device = DeviceName, IPAddress = "", RemoteUrl = "", RemoteDomain = "",
+                  FileName = "", SHA256 = InitiatingProcessSHA256,
+                  ProcessName = InitiatingProcessFileName,
+                  ParentProcessName = InitiatingProcessParentFileName,
+                  AlertId = "", Severity = "", TechniqueId = "",
+                  SourceRecordId = strcat("DeviceRegistryEvents|", DeviceId, "|", tostring(ReportId), "|", tostring(TimeGenerated)),
+                  Details = tostring(bag_pack(
+                      "RegistryKey", RegistryKey,
+                      "RegistryValueName", RegistryValueName,
+                      "RegistryValueData", RegistryValueData))
+    ),
+    (
+        DeviceEvents
+        | where TimeGenerated >= StartTimeUtc and TimeGenerated < EndTimeUtc
+        | where DeviceId =~ TargetDeviceId
+        | project TimestampUtc = TimeGenerated, SourceTable = "DeviceEvents",
+                  EventCategory = "DeviceEvent", ActionType,
+                  User = FormatUser(InitiatingProcessAccountUpn, InitiatingProcessAccountDomain, InitiatingProcessAccountName),
+                  Device = DeviceName, IPAddress = RemoteIP, RemoteUrl,
+                  RemoteDomain = DomainOf(RemoteUrl),
+                  FileName, SHA256,
+                  ProcessName = InitiatingProcessFileName,
+                  ParentProcessName = InitiatingProcessParentFileName,
+                  AlertId = "", Severity = "", TechniqueId = "",
+                  SourceRecordId = strcat("DeviceEvents|", DeviceId, "|", tostring(ReportId), "|", tostring(TimeGenerated)),
+                  Details = tostring(bag_pack(
+                      "ProcessCommandLine", ProcessCommandLine,
+                      "FolderPath", FolderPath,
+                      "AdditionalFields", AdditionalFields))
+    )
+    | where GuardOk
+    | extend Details = iff(strlen(Details) > MaxDetailsChars,
+                           strcat(substring(Details, 0, MaxDetailsChars), " ...[LIA: Details truncated]"),
+                           Details)
+);
+let TotalMatched = toscalar(Events | count);
+let PerSource = Events | summarize SourceMatched = count() by SourceTable;
+let Capped = materialize(
+    Events
+    | order by SourceTable asc, TimestampUtc asc
+    | extend SourceRank = row_number(1, prev(SourceTable) != SourceTable)
+    | where SourceRank <= MaxPerSource
+    | project-away SourceRank
+    | lookup kind=leftouter PerSource on SourceTable
+);
+let ReturnedCount = toscalar(Capped | count);
+let Diagnostic =
+    print TimestampUtc = datetime(null), SourceTable = "LIA_GUARD",
+          EventCategory = "Diagnostic", ActionType = "",
+          User = "", Device = "", IPAddress = "", RemoteUrl = "", RemoteDomain = "",
+          FileName = "", SHA256 = "", ProcessName = "", ParentProcessName = "",
+          AlertId = "", Severity = "", TechniqueId = "", SourceRecordId = "",
+          Details = "LIA guard: invalid DeviceId, unparseable time, EndTimeUtc not after StartTimeUtc, or interval exceeds MaxWindow"
+    | where not(GuardOk);
+union Capped, Diagnostic
+| extend TotalMatched = TotalMatched,
+         ReturnedCount = ReturnedCount,
+         ReturnedLimit = MaxPerSource,
+         // Truncated: this row's source had more than MaxPerSource matches.
+         // AnyTruncated: at least one source in this result was truncated.
+         Truncated = coalesce(SourceMatched, 0) > MaxPerSource,
+         AnyTruncated = TotalMatched > ReturnedCount,
+         Workspace = RequestedWorkspace
+| order by TimestampUtc asc

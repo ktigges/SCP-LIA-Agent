@@ -1,0 +1,128 @@
+// Tool: match_observed_indicators
+// Parameters: {Indicators}, {StartTimeUtc}, {EndTimeUtc}, {Workspace}
+// Matches IPs, domains, URLs, and hashes against Sentinel threat intelligence.
+let IndicatorsRaw = "{Indicators}";
+let StartTimeUtc = todatetime("{StartTimeUtc}");
+let EndTimeUtc = todatetime("{EndTimeUtc}");
+let RequestedWorkspace = "{Workspace}";
+let MaxWindow = 30d;
+let TiLookback = 30d;
+let MaxIndicators = 50;
+let MaxRecords = 25;
+let Parsed = materialize(
+    print Value = split(IndicatorsRaw, ",")
+    | mv-expand Value to typeof(string)
+    | extend Value = trim(@"\s", Value)
+    | where isnotempty(Value)
+    | extend IndicatorType = case(
+        Value matches regex @"^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$", "IPv4",
+        strlen(Value) between (2 .. 39) and Value matches regex @"^[0-9A-Fa-f:]+$" and Value contains ":", "IPv6",
+        strlen(Value) == 64 and Value matches regex @"^[0-9A-Fa-f]+$", "SHA256",
+        strlen(Value) between (1 .. 2048) and Value matches regex @"^[A-Za-z][A-Za-z0-9+.\-]*://[^\s""']+$", "URL",
+        strlen(Value) between (4 .. 253) and Value matches regex @"^(?:[A-Za-z0-9](?:[A-Za-z0-9\-]*[A-Za-z0-9])?\.)+[A-Za-z][A-Za-z]+$", "Domain",
+        "Invalid")
+    | summarize IndicatorType = take_any(IndicatorType) by Value = tolower(Value)
+);
+let Valid = materialize(Parsed | where IndicatorType != "Invalid" | take MaxIndicators);
+let ValidValues = Valid | project Value;
+let SubmittedCount = toscalar(Parsed | count);
+let InvalidCount = toscalar(Parsed | where IndicatorType == "Invalid" | count);
+let GuardOk = isnotnull(StartTimeUtc) and isnotnull(EndTimeUtc)
+              and EndTimeUtc > StartTimeUtc
+              and (EndTimeUtc - StartTimeUtc) <= MaxWindow
+              and toscalar(Valid | count) > 0;
+let Matches = materialize(
+    union
+    (
+        ThreatIntelIndicators
+        | where TimeGenerated >= StartTimeUtc - TiLookback and TimeGenerated < EndTimeUtc
+        | where GuardOk
+        | where tolower(ObservableValue) in (ValidValues)
+        | where (isnull(ValidFrom) or ValidFrom < EndTimeUtc)
+            and (isnull(ValidUntil) or ValidUntil >= StartTimeUtc)
+        | summarize arg_max(TimeGenerated, ObservableKey, Confidence, IsActive,
+                            ValidFrom, ValidUntil, SourceSystem)
+            by Id, MatchedValue = tolower(ObservableValue)
+        | extend SourceTable = "ThreatIntelIndicators",
+                 TiRecordId = Id,
+                 TiDetails = bag_pack("ObservableKey", ObservableKey,
+                                      "Confidence", Confidence, "IsActive", IsActive,
+                                      "ValidFrom", ValidFrom, "ValidUntil", ValidUntil,
+                                      "SourceSystem", SourceSystem)
+        | project TimeGenerated, SourceTable, MatchedValue, TiRecordId, TiDetails
+    ),
+    (
+        ThreatIntelligenceIndicator
+        | where TimeGenerated >= StartTimeUtc - TiLookback and TimeGenerated < EndTimeUtc
+        | where GuardOk
+        | extend Candidate = tolower(coalesce(NetworkIP, NetworkDestinationIP, NetworkSourceIP,
+                                              DomainName, Url, FileHashValue))
+        | where Candidate in (ValidValues)
+        | where isnull(ExpirationDateTime) or ExpirationDateTime >= StartTimeUtc
+        | summarize arg_max(TimeGenerated, ThreatType, ConfidenceScore, Active,
+                            ExpirationDateTime, SourceSystem, Description)
+            by IndicatorId, MatchedValue = Candidate
+        | extend SourceTable = "ThreatIntelligenceIndicator",
+                 TiRecordId = IndicatorId,
+                 TiDetails = bag_pack("ThreatType", ThreatType,
+                                      "ConfidenceScore", ConfidenceScore, "Active", Active,
+                                      "ExpirationDateTime", ExpirationDateTime,
+                                      "SourceSystem", SourceSystem,
+                                      "Description", Description)
+        | project TimeGenerated, SourceTable, MatchedValue, TiRecordId, TiDetails
+    )
+    | lookup kind=inner Valid on $left.MatchedValue == $right.Value   // bounded: <= MaxIndicators rows
+);
+let TotalMatched = toscalar(Matches | count);
+// TI table counts for the source-status contract. The strict union ensures that
+// missing or inaccessible tables fail explicitly.
+let TiPresence =
+    union
+    (ThreatIntelIndicators       | where TimeGenerated >= StartTimeUtc - TiLookback and TimeGenerated < EndTimeUtc | summarize TiRecordsInLookback = count() | extend TiTable = "ThreatIntelIndicators"),
+    (ThreatIntelligenceIndicator | where TimeGenerated >= StartTimeUtc - TiLookback and TimeGenerated < EndTimeUtc | summarize TiRecordsInLookback = count() | extend TiTable = "ThreatIntelligenceIndicator");
+// Always emitted when parameters are valid, so zero matches remains distinguishable
+// from zero TI records in the lookback.
+let Summary =
+    TiPresence
+    | summarize TiTables = make_bag(bag_pack(TiTable, TiRecordsInLookback))
+    | union (print TiTables = dynamic({}))
+    | summarize TiTables = make_bag(TiTables)
+    | where GuardOk
+    | project TimestampUtc = datetime(null), SourceTable = "LIA_SUMMARY",
+              EventCategory = "Diagnostic", ActionType = "IndicatorMatchSummary",
+              User = "", Device = "", IPAddress = "", RemoteUrl = "", RemoteDomain = "",
+              FileName = "", SHA256 = "", ProcessName = "", ParentProcessName = "",
+              AlertId = "", Severity = "", TechniqueId = "", SourceRecordId = "",
+              Details = tostring(bag_pack("TiTablesPresentWithRecordCountInLookback", TiTables,
+                                          "TiLookbackDays", toint(TiLookback / 1d)));
+let Normalized =
+    Matches
+    | top MaxRecords by TimeGenerated desc
+    | project TimestampUtc = TimeGenerated, SourceTable,
+              EventCategory = "ThreatIntelMatch", ActionType = "IndicatorMatched",
+              User = "", Device = "",
+              IPAddress = iff(IndicatorType in ("IPv4", "IPv6"), MatchedValue, ""),
+              RemoteUrl = iff(IndicatorType == "URL", MatchedValue, ""),
+              RemoteDomain = iff(IndicatorType == "Domain", MatchedValue, ""),
+              FileName = "", SHA256 = iff(IndicatorType == "SHA256", MatchedValue, ""),
+              ProcessName = "", ParentProcessName = "",
+              AlertId = "", Severity = "", TechniqueId = "",
+              SourceRecordId = strcat(SourceTable, "|", TiRecordId),
+              Details = tostring(bag_set_key(TiDetails, "IndicatorType", IndicatorType));
+let Diagnostic =
+    print TimestampUtc = datetime(null), SourceTable = "LIA_GUARD",
+          EventCategory = "Diagnostic", ActionType = "",
+          User = "", Device = "", IPAddress = "", RemoteUrl = "", RemoteDomain = "",
+          FileName = "", SHA256 = "", ProcessName = "", ParentProcessName = "",
+          AlertId = "", Severity = "", TechniqueId = "", SourceRecordId = "",
+          Details = "LIA guard: no valid indicators, unparseable time, EndTimeUtc not after StartTimeUtc, or interval exceeds MaxWindow"
+    | where not(GuardOk);
+union Normalized, Summary, Diagnostic
+| extend TotalMatched = TotalMatched,
+         ReturnedLimit = MaxRecords,
+         Truncated = TotalMatched > MaxRecords,
+         IndicatorsSubmitted = SubmittedCount,
+         IndicatorsInvalid = InvalidCount,
+         IndicatorsEvaluated = toscalar(Valid | count),
+         Workspace = RequestedWorkspace
+| order by TimestampUtc asc

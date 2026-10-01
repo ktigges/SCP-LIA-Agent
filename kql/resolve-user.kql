@@ -1,0 +1,44 @@
+// Tool: resolve_user
+// Parameters: {UserIdentifier}, {Workspace}
+// Defender XDR Advanced Hunting. Resolves UPN, SID, or Object ID.
+let InputRaw = trim(@"\s", "{UserIdentifier}");
+let RequestedWorkspace = "{Workspace}";
+let Lookback = 30d;
+let MaxCandidates = 10;
+let IsUpn  = strlen(InputRaw) between (5 .. 256) and InputRaw matches regex @"^[A-Za-z0-9._%+'\-]+@[A-Za-z0-9.\-]+\.[A-Za-z][A-Za-z]+$";
+let IsSid  = array_length(split(InputRaw, "-")) between (3 .. 16) and InputRaw matches regex @"^S-1-[0-9]+(-[0-9]+)+$";
+let IsGuid = strlen(InputRaw) == 36
+             and substring(InputRaw, 8, 1) == "-" and substring(InputRaw, 13, 1) == "-"
+             and substring(InputRaw, 18, 1) == "-" and substring(InputRaw, 23, 1) == "-"
+             and InputRaw matches regex @"^[0-9a-fA-F-]+$";
+let GuardOk = strlen(InputRaw) between (1 .. 256) and (IsUpn or IsSid or IsGuid);
+let Candidates =
+    IdentityInfo
+    | where TimeGenerated >= ago(Lookback)
+    | where GuardOk
+    | where (IsUpn and AccountUpn =~ InputRaw)
+         or (IsSid and OnPremSid =~ InputRaw)
+         or (IsGuid and AccountObjectId =~ InputRaw)
+    | extend MatchType = case(IsUpn, "UPN", IsSid, "SID", "ObjectId")
+    | summarize arg_max(TimeGenerated, AccountUpn, OnPremSid, AccountDisplayName,
+                        AccountName, AccountDomain, MatchType)
+        by AccountObjectId
+    | project AccountObjectId, AccountUpn, OnPremSid, AccountDisplayName,
+              AccountName, AccountDomain, MatchType, LastSeenUtc = TimeGenerated;
+let CandidateCount = toscalar(Candidates | count);
+let Diagnostic =
+    print AccountObjectId = "", AccountUpn = "", OnPremSid = "",
+          AccountDisplayName = "", AccountName = "", AccountDomain = "",
+          MatchType = iff(GuardOk, "None", "LIA_GUARD"), LastSeenUtc = datetime(null)
+    | where not(GuardOk) or CandidateCount == 0;
+union
+    (Candidates | top MaxCandidates by LastSeenUtc desc),
+    Diagnostic
+| extend CandidateCount = CandidateCount,
+         ResolutionStatus = case(
+            not(GuardOk), "LIA guard: identifier failed format validation",
+            CandidateCount == 0, "NoMatch",
+            CandidateCount == 1, "Resolved",
+            "Ambiguous"),
+         Workspace = RequestedWorkspace,
+         SourceTable = "IdentityInfo"

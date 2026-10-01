@@ -1,0 +1,195 @@
+// Tool: get_file_hash_activity
+// Parameters: {SHA256}, {StartTimeUtc}, {EndTimeUtc}, {Workspace}
+// Searches across all visible devices for an exact SHA256 (max 30 days).
+let HashRaw = tolower(trim(@"\s", "{SHA256}"));
+let StartTimeUtc = todatetime("{StartTimeUtc}");
+let EndTimeUtc = todatetime("{EndTimeUtc}");
+let RequestedWorkspace = "{Workspace}";
+let MaxWindow = 30d;
+let MaxRows = 100;
+let MaxDetailsChars = 512;
+let IsSha256 = strlen(HashRaw) == 64 and HashRaw matches regex @"^[0-9a-f]+$";
+let GuardOk = isnotnull(StartTimeUtc) and isnotnull(EndTimeUtc)
+              and EndTimeUtc > StartTimeUtc
+              and (EndTimeUtc - StartTimeUtc) <= MaxWindow
+              and IsSha256;
+let FormatUser = (upn: string, domain: string, name: string) {
+    case(isnotempty(upn), upn,
+         isnotempty(name) and isnotempty(domain), strcat(domain, @"\", name),
+         name)
+};
+let Events = materialize(
+    union
+    (
+        DeviceFileEvents
+        | where TimeGenerated >= StartTimeUtc and TimeGenerated < EndTimeUtc
+        | where GuardOk and SHA256 =~ HashRaw
+        | project TimestampUtc = TimeGenerated, SourceTable = "DeviceFileEvents",
+                  EventCategory = "File", ActionType, DeviceId, DeviceName,
+                  User = FormatUser(InitiatingProcessAccountUpn, InitiatingProcessAccountDomain, InitiatingProcessAccountName),
+                  FileName, FolderPath, SHA256 = HashRaw,
+                  ProcessName = InitiatingProcessFileName,
+                  IPAddress = RequestSourceIP, RemoteUrl = FileOriginUrl, AlertId = "",
+                  RawDetails = bag_pack("PreviousFileName", PreviousFileName)
+    ),
+    (
+        DeviceProcessEvents
+        | where TimeGenerated >= StartTimeUtc and TimeGenerated < EndTimeUtc
+        | where GuardOk and SHA256 =~ HashRaw
+        | project TimestampUtc = TimeGenerated, SourceTable = "DeviceProcessEvents",
+                  EventCategory = "Process", ActionType, DeviceId, DeviceName,
+                  User = FormatUser(AccountUpn, AccountDomain, AccountName),
+                  FileName, FolderPath, SHA256 = HashRaw,
+                  ProcessName = FileName, IPAddress = "", RemoteUrl = "", AlertId = "",
+                  RawDetails = bag_pack("ProcessCommandLine", ProcessCommandLine,
+                                        "InitiatingProcessFileName", InitiatingProcessFileName)
+    ),
+    (
+        DeviceNetworkEvents
+        | where TimeGenerated >= StartTimeUtc and TimeGenerated < EndTimeUtc
+        | where GuardOk and InitiatingProcessSHA256 =~ HashRaw
+        | project TimestampUtc = TimeGenerated, SourceTable = "DeviceNetworkEvents",
+                  EventCategory = "Network", ActionType, DeviceId, DeviceName,
+                  User = FormatUser(InitiatingProcessAccountUpn, InitiatingProcessAccountDomain, InitiatingProcessAccountName),
+                  FileName = InitiatingProcessFileName, FolderPath = "", SHA256 = HashRaw,
+                  ProcessName = InitiatingProcessFileName,
+                  IPAddress = RemoteIP, RemoteUrl, AlertId = "",
+                  RawDetails = bag_pack("RemotePort", RemotePort, "Protocol", Protocol,
+                                        "InitiatingProcessCommandLine", InitiatingProcessCommandLine)
+    ),
+    (
+        DeviceRegistryEvents
+        | where TimeGenerated >= StartTimeUtc and TimeGenerated < EndTimeUtc
+        | where GuardOk and InitiatingProcessSHA256 =~ HashRaw
+        | project TimestampUtc = TimeGenerated, SourceTable = "DeviceRegistryEvents",
+                  EventCategory = "Registry", ActionType, DeviceId, DeviceName,
+                  User = FormatUser(InitiatingProcessAccountUpn, InitiatingProcessAccountDomain, InitiatingProcessAccountName),
+                  FileName = InitiatingProcessFileName, FolderPath = "", SHA256 = HashRaw,
+                  ProcessName = InitiatingProcessFileName,
+                  IPAddress = "", RemoteUrl = "", AlertId = "",
+                  RawDetails = bag_pack("RegistryKey", RegistryKey,
+                                        "RegistryValueName", RegistryValueName,
+                                        "RegistryValueData", RegistryValueData)
+    ),
+    (
+        DeviceEvents
+        | where TimeGenerated >= StartTimeUtc and TimeGenerated < EndTimeUtc
+        | where GuardOk and (SHA256 =~ HashRaw or InitiatingProcessSHA256 =~ HashRaw)
+        | project TimestampUtc = TimeGenerated, SourceTable = "DeviceEvents",
+                  EventCategory = "DeviceEvent", ActionType, DeviceId, DeviceName,
+                  User = FormatUser(InitiatingProcessAccountUpn, InitiatingProcessAccountDomain, InitiatingProcessAccountName),
+                  FileName = iff(SHA256 =~ HashRaw, FileName, InitiatingProcessFileName),
+                  FolderPath, SHA256 = HashRaw,
+                  ProcessName = InitiatingProcessFileName,
+                  IPAddress = RemoteIP, RemoteUrl, AlertId = "",
+                  RawDetails = bag_pack("AdditionalFields", AdditionalFields)
+    ),
+    (
+        AlertEvidence
+        | where TimeGenerated >= StartTimeUtc and TimeGenerated < EndTimeUtc
+        | where GuardOk and SHA256 =~ HashRaw
+        | project TimestampUtc = TimeGenerated, SourceTable = "AlertEvidence",
+                  EventCategory = "Alert", ActionType = "HashInAlertEvidence",
+                  DeviceId, DeviceName, User = AccountUpn,
+                  FileName, FolderPath = "", SHA256 = HashRaw,
+                  ProcessName = "", IPAddress = RemoteIP, RemoteUrl, AlertId,
+                  RawDetails = bag_pack("EvidenceRole", EvidenceRole, "EntityType", EntityType)
+    )
+);
+let ExpectedSources = datatable(SourceTable: string)
+[
+    "DeviceFileEvents",
+    "DeviceProcessEvents",
+    "DeviceNetworkEvents",
+    "DeviceRegistryEvents",
+    "DeviceEvents",
+    "AlertEvidence"
+];
+let Counts = Events | summarize Records = count() by SourceTable;
+let SourceCountsBag = toscalar(
+    ExpectedSources
+    | lookup kind=leftouter Counts on SourceTable
+    | extend Records = coalesce(Records, 0)
+    | summarize SourceCounts = make_bag(bag_pack(SourceTable, Records))
+    | project SourceCounts
+);
+let Aggregated = materialize(
+    Events
+    | summarize FirstSeenUtc = min(TimestampUtc),
+                LastSeenUtc = max(TimestampUtc),
+                ObservationCount = count(),
+                Actions = make_set(ActionType, 20),
+                Users = make_set_if(User, isnotempty(User), 20),
+                FileNames = make_set_if(FileName, isnotempty(FileName), 20),
+                FolderPaths = make_set_if(FolderPath, isnotempty(FolderPath), 20),
+                ProcessNames = make_set_if(ProcessName, isnotempty(ProcessName), 20),
+                IPAddresses = make_set_if(IPAddress, isnotempty(IPAddress), 20),
+                RemoteUrls = make_set_if(RemoteUrl, isnotempty(RemoteUrl), 20),
+                AlertIds = make_set_if(AlertId, isnotempty(AlertId), 20),
+                SampleDetails = take_any(RawDetails)
+        by SourceTable, EventCategory, DeviceId, DeviceName, SHA256
+);
+let AggregateRows = toscalar(Aggregated | count);
+let TotalObservations = toscalar(Events | count);
+let DistinctDeviceCount = toscalar(Events | where isnotempty(DeviceId) | summarize dcount(DeviceId));
+let Capped = materialize(Aggregated | top MaxRows by LastSeenUtc desc);
+let ReturnedCount = toscalar(Capped | count);
+let Normalized =
+    Capped
+    | project TimestampUtc = LastSeenUtc, SourceTable, EventCategory,
+              ActionType = "HashObserved",
+              User = strcat_array(Users, ","),
+              Device = DeviceName,
+              IPAddress = strcat_array(IPAddresses, ","),
+              RemoteUrl = strcat_array(RemoteUrls, ","),
+              RemoteDomain = "",
+              FileName = strcat_array(FileNames, ","),
+              SHA256,
+              ProcessName = strcat_array(ProcessNames, ","),
+              ParentProcessName = "",
+              AlertId = strcat_array(AlertIds, ","),
+              Severity = "", TechniqueId = "",
+              SourceRecordId = strcat("FileHashActivity|", SourceTable, "|", DeviceId, "|", SHA256),
+              Details = tostring(bag_pack(
+                  "DeviceId", DeviceId,
+                  "FirstSeenUtc", FirstSeenUtc,
+                  "LastSeenUtc", LastSeenUtc,
+                  "ObservationCount", ObservationCount,
+                  "Actions", Actions,
+                  "FolderPaths", FolderPaths,
+                  "SampleDetails", SampleDetails)),
+              FirstSeenUtc, LastSeenUtc, ObservationCount
+    | extend Details = iff(strlen(Details) > MaxDetailsChars,
+                           strcat(substring(Details, 0, MaxDetailsChars), " ...[LIA: Details truncated]"),
+                           Details);
+let Summary =
+    print TimestampUtc = datetime(null), SourceTable = "LIA_SUMMARY",
+          EventCategory = "Diagnostic", ActionType = "FileHashActivitySummary",
+          User = "", Device = "", IPAddress = "", RemoteUrl = "", RemoteDomain = "",
+          FileName = "", SHA256 = HashRaw, ProcessName = "", ParentProcessName = "",
+          AlertId = "", Severity = "", TechniqueId = "", SourceRecordId = "",
+          Details = tostring(bag_pack(
+              "SourceCounts", SourceCountsBag,
+              "TotalObservations", TotalObservations,
+              "DistinctDeviceCount", DistinctDeviceCount,
+              "AggregateRows", AggregateRows,
+              "RowsReturned", ReturnedCount,
+              "MaxRows", MaxRows))
+    | where GuardOk;
+let Diagnostic =
+    print TimestampUtc = datetime(null), SourceTable = "LIA_GUARD",
+          EventCategory = "Diagnostic", ActionType = "",
+          User = "", Device = "", IPAddress = "", RemoteUrl = "", RemoteDomain = "",
+          FileName = "", SHA256 = HashRaw, ProcessName = "", ParentProcessName = "",
+          AlertId = "", Severity = "", TechniqueId = "", SourceRecordId = "",
+          Details = "LIA guard: SHA256 must be exactly 64 hexadecimal characters; times must parse; EndTimeUtc must be after StartTimeUtc; interval must not exceed 30 days"
+    | where not(GuardOk);
+union Normalized, Summary, Diagnostic
+| extend TotalMatched = AggregateRows,
+         TotalObservations = TotalObservations,
+         DistinctDeviceCount = DistinctDeviceCount,
+         ReturnedCount = ReturnedCount,
+         ReturnedLimit = MaxRows,
+         Truncated = AggregateRows > MaxRows,
+         Workspace = RequestedWorkspace
+| order by TimestampUtc asc

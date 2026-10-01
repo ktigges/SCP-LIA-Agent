@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+<!--
+  Author: Kevin Tigges
+  Purpose: Plain-language, multi-page explanation of the LIA (Log Intelligence
+           Assistant) Security Copilot proof-of-concept -- what it is, what
+           its pieces do, and how a request actually flows through it.
+  Written for a reader with zero prior context on Security Copilot, agents,
+  or KQL -- every component is explained from scratch.
+  This page is self-contained: no external scripts, fonts, or network calls.
+  All styling is inline. Opening it does not transmit data anywhere or run
+  remote code.
+  Produced independently; not reviewed or endorsed by Microsoft.
+-->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LIA -- Components</title>
+<style>
+:root{
+  --navy:#0b2a4a; --royal:#1565c0; --blue:#0067b8; --ink:#1b2530; --muted:#5b6b7c; --line:#d9e1ea;
+  --panel:#f5f8fb; --good:#1a7f4e; --warn:#b25c00; --bad:#a32424;
+}
+*{box-sizing:border-box;}
+html,body{height:100%;}
+body{margin:0; background:#fff; color:var(--ink); display:flex; flex-direction:column; height:100vh; overflow:hidden;
+  font:15px/1.6 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+header.top{padding:26px 32px 0; }
+header.top h1{margin:0; font-size:24px; color:var(--navy); font-weight:700;}
+header.top .tag{font-size:12.5px; color:var(--muted); margin-top:2px;}
+nav.tabs{display:flex; gap:4px; padding:18px 32px 0; border-bottom:2px solid var(--line); flex-wrap:wrap;}
+nav.tabs a{color:var(--muted); text-decoration:none; font-size:13.5px; font-weight:700;
+  padding:10px 16px; border-bottom:3px solid transparent; margin-bottom:-2px;}
+nav.tabs a:hover{color:var(--navy);}
+nav.tabs a.active{color:var(--navy); border-bottom:3px solid var(--blue);}
+main{max-width:900px; margin:0 auto; padding:30px 24px 60px; flex:1 1 auto; min-height:0; overflow-y:auto; width:100%;}
+h1.page-title{font-size:26px; color:var(--navy); margin:0 0 4px;}
+.subtitle{color:var(--muted); font-size:14px; margin:0 0 22px;}
+h2{font-size:19px; margin:30px 0 8px; color:var(--navy); border-bottom:2px solid var(--line); padding-bottom:6px;}
+h2:first-of-type{margin-top:6px;}
+h3{font-size:15.5px; margin:18px 0 6px; color:var(--ink);}
+p{margin:8px 0;}
+.note{color:var(--muted); font-size:13.5px;}
+.callout{background:var(--panel); border-left:4px solid var(--blue); padding:13px 17px; margin:14px 0; border-radius:4px;}
+.analogy{background:#fbf6e8; border-left:4px solid #c8930a; padding:12px 16px; margin:12px 0; border-radius:4px; font-size:14px;}
+.analogy b{color:#7a5c00;}
+table{width:100%; border-collapse:collapse; margin:12px 0 22px; font-size:13.5px;}
+th,td{border:1px solid var(--line); padding:8px 10px; text-align:left; vertical-align:top;}
+th{background:var(--panel); color:var(--navy); font-weight:600;}
+code{background:var(--panel); border:1px solid var(--line); border-radius:3px; padding:1px 5px; font-size:12.5px;}
+ul{margin:8px 0; padding-left:22px;} li{margin:5px 0;}
+.status-pill{display:inline-block; padding:2px 8px; border-radius:10px; font-size:12px; font-weight:600;}
+.status-good{background:#e4f3ea; color:var(--good);}
+.status-warn{background:#fdf0e0; color:var(--warn);}
+.status-bad{background:#fde8e8; color:var(--bad);}
+.comp-block{border:1px solid var(--line); border-radius:8px; padding:18px 20px; margin:18px 0; background:#fff;}
+.comp-block .num-badge{display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px;
+  border-radius:50%; background:var(--navy); color:#fff; font-size:13px; font-weight:700; margin-right:8px;}
+.comp-block h3{display:flex; align-items:center; margin:0 0 10px; font-size:17px; color:var(--navy);}
+.pagenav{display:flex; justify-content:space-between; margin-top:44px; border-top:1px solid var(--line); padding-top:16px; font-size:13.5px;}
+.pagenav a{color:var(--blue); text-decoration:none; font-weight:600;}
+.pagenav a:hover{text-decoration:underline;}
+footer.navybar{background:var(--royal); color:#d7e4f2; padding:16px 32px; flex-shrink:0;
+  display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;}
+footer.navybar .disclaimer{font-size:11px; color:#9fb6cc; max-width:600px;}
+.ms-logo{display:flex; align-items:center; gap:8px;}
+.ms-logo span{font-size:13px; font-weight:600; color:#fff;}
+.flowchart{width:100%; height:auto; margin:10px 0 6px;}
+.flow-key{display:flex; gap:18px; flex-wrap:wrap; font-size:12.5px; color:var(--muted); margin:6px 0 20px;}
+.flow-key span{display:inline-flex; align-items:center; gap:6px;}
+.flow-key i{width:12px; height:12px; border-radius:2px; display:inline-block;}
+.topbar{background:var(--royal); padding:10px 32px; display:flex; align-items:center; justify-content:flex-end;}
+.topbar .ms-logo{color:#fff;}
+.topbar .ms-logo span{color:#fff;}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <div class="ms-logo">
+    <svg width="20" height="20" viewBox="0 0 21 21" xmlns="http://www.w3.org/2000/svg"><rect x="1" y="1" width="9" height="9" fill="#f25022"/><rect x="11" y="1" width="9" height="9" fill="#7fba00"/><rect x="1" y="11" width="9" height="9" fill="#00a4ef"/><rect x="11" y="11" width="9" height="9" fill="#ffb900"/></svg>
+    <span>Microsoft</span>
+  </div>
+</div>
+<header class="top">
+  <h1>LIA -- Log Intelligence Assistant</h1>
+  <div class="tag">How it works, explained from scratch</div>
+</header>
+<nav class="tabs">
+    <a href="index.html" class="">Overview</a>
+    <a href="components.html" class="active">Components</a>
+    <a href="flow.html" class="">Flow</a>
+    <a href="guardrails.html" class="">Guardrails</a>
+    <a href="glossary.html" class="">Glossary</a>
+</nav>
+<main>
+
+<h1 class="page-title">Components</h1>
+
+<p>A bunch of these names sound like they could be the same thing --
+"Security Copilot," "the agent," "the plugin," "the tools." They're not.
+Each one does a specific job, and none of them can do the others' jobs.</p>
+
+<div class="comp-block">
+<h3><span class="num-badge">1</span>Microsoft Security Copilot</h3>
+<p>This is a product Microsoft sells -- a chat window, like talking to
+ChatGPT, except built specifically for security work and able to plug into
+a company's actual security tools and data. For LIA, it's the thing the
+analyst types into. It runs the AI model, remembers the conversation, and
+lets us attach our own custom behavior on top.</p>
+<p>We're using it instead of building a chat app from scratch because
+building a secure chat interface, connecting it to Microsoft's security
+data, and handling permissions correctly is a massive amount of work
+Microsoft already did. We're just customizing how it behaves.</p>
+</div>
+
+<div class="comp-block">
+<h3><span class="num-badge">2</span>The LIA agent -- a set of instructions</h3>
+<p>A text file (<code>agent/lia-agent.yaml</code>) written in YAML -- a
+structured way to write settings and instructions, nothing scarier than a
+very organized to-do list. This is the rule book for the AI: always ask
+for a device and a time range before doing anything, only use these 8
+tools, always write the final answer in this exact 10-part format. Without
+this file, you'd just have plain Security Copilot, which doesn't know any
+of LIA's specific rules.</p>
+</div>
+
+<div class="comp-block">
+<h3><span class="num-badge">3</span>The Sentinel MCP plugin -- the connector</h3>
+<p>Another settings file (<code>plugins/lia-sentinel-mcp-plugin.yaml</code>).
+MCP stands for Model Context Protocol -- don't worry about the name, just
+know it's a standard way to give an AI a fixed list of tools it's allowed
+to use, and nothing outside that list. It tells Security Copilot two
+things: where to find the 8 approved searches, and the exact names of the
+8 searches it's allowed to call. If a name isn't on that list, it can't be
+called -- not "shouldn't," can't.</p>
+<p>This is the actual lock, not a polite request. Even if the AI got
+confused, or someone tried to trick it into doing something else, this
+file is what physically stops it from reaching anything beyond the 8
+approved searches.</p>
+</div>
+
+<div class="comp-block">
+<h3><span class="num-badge">4</span>The 8 KQL tools -- the pre-written searches</h3>
+<p>KQL is Kusto Query Language -- just a way of asking a database "show me
+all the records where X happened between this time and that time," like a
+precise search bar. These are 8 separate search queries, each written by a
+person ahead of time, tested, and reviewed. Each one gets saved as a tool
+with a plain name, like <code>get_device_timeline</code>, and a list of
+blanks it needs filled in -- which device, what time range.</p>
+<p>The AI never sees or edits the search text. All it does is say "please
+run <code>get_device_timeline</code> for device X between time A and time
+B" -- filling out a form, not writing code.</p>
+<p>The actual query files, each named for what it does:
+<code>kql/normalize-time-window.kql</code>,
+<code>kql/resolve-device.kql</code>, <code>kql/resolve-user.kql</code>,
+<code>kql/device-timeline.kql</code>,
+<code>kql/user-authentication-timeline.kql</code>,
+<code>kql/related-alerts.kql</code>,
+<code>kql/match-observed-indicators.kql</code>, and
+<code>kql/source-coverage.kql</code>.</p>
+</div>
+
+<div class="comp-block">
+<h3><span class="num-badge">5</span>Defender XDR Advanced Hunting -- where the search actually runs</h3>
+<p>A feature inside the Microsoft Defender security portal, a website
+security teams already use. "Advanced Hunting" is the name of the search
+feature inside it, and it's the engine -- it takes one of the 8 saved
+searches, runs it against real data, and returns rows of results. It also
+enforces some of the safety rules itself, like refusing to run a search if
+the time range is too big.</p>
+<p>We didn't build a separate database because all the security log data
+already lives here. Copying it somewhere else would be slower, more
+expensive, and one more place for something to go wrong.</p>
+</div>
+
+<div class="comp-block">
+<h3><span class="num-badge">6</span>The actual data -- Defender and Sentinel tables</h3>
+<p>The raw information -- a giant, constantly growing spreadsheet of
+everything that happened: every sign-in, every file a computer opened,
+every alert a security tool raised. Some of it lives directly in Defender.
+Some lives in a connected system called Microsoft Sentinel.</p>
+<p>LIA only sees one approved slice of this data per deployment, called a
+workspace -- not every workspace a company might have, just the one picked
+ahead of time. That keeps it obvious what LIA can see, and stops a mistake
+in one deployment from exposing someone else's data.</p>
+</div>
+
+<h2>What the MCP integration gives you</h2>
+<div class="comp-block">
+<p>Security Copilot can already write and run its own KQL on the fly,
+through its built-in Advanced Hunting skill. Native KQL from the model can
+do a lot of this -- pull a device timeline, check a sign-in history,
+search for an indicator. For a quick one-off question, that's often fine.</p>
+<p>The difference shows up on the things that matter for a repeatable,
+auditable investigation process:</p>
+<ul>
+<li><strong>The query is fixed, not generated.</strong> With native KQL,
+the model writes new query text every time, from scratch. With MCP, the 8
+queries were written once, tested, and reviewed. The model only fills in
+blanks like device name and time window -- it never touches the query
+logic itself.</li>
+<li><strong>The guardrails can't be skipped.</strong> Each of the 8 tools
+has limits built into the query -- a maximum 24-hour window, a check that
+the end time is after the start time, validation on the device or user
+format. Those checks run every time, regardless of what the model asks
+for. A hand-written query only has the limits someone remembered to add
+that day.</li>
+<li><strong>The tool list is enforced, not suggested.</strong> The plugin
+file only allows 8 named tools. If the model tries to call anything else,
+the call is rejected before it reaches any data. With native KQL there's
+no equivalent wall -- the model's judgment is the only thing standing
+between a normal question and an oversized or off-target query.</li>
+<li><strong>Access stays tied to the analyst.</strong> LIA runs with the
+signed-in analyst's own permissions, not an elevated service account. MCP
+doesn't change who can see what -- it just narrows what LIA is allowed to
+ask for within that access.</li>
+</ul>
+<p>Native KQL gives the model more flexibility to write whatever query it
+wants. MCP gives some of that up on purpose -- the query always runs the
+same way, and it can't be pushed outside the 8 approved searches.</p>
+</div>
+
+<h2>Schemas and tests</h2>
+<div class="comp-block">
+<h3><span class="num-badge">7</span>Schemas</h3>
+<p>A rulebook for what a piece of data should look like -- which fields it
+needs, what type each one is. We use these to check the final report and
+the event data come out in the right shape. Like a form with required
+fields -- if something's missing, you find out before it causes a
+problem.</p>
+</div>
+<div class="comp-block">
+<h3><span class="num-badge">8</span>Tests</h3>
+<p>Sample questions with expected answers, used to check LIA still behaves
+correctly after a change. Nobody runs these during a real investigation --
+they're there to catch a mistake before it reaches an analyst.</p>
+</div>
+<div class="pagenav"><a href="index.html">&larr; Overview</a><a href="flow.html">Flow &rarr;</a></div>
+</main>
+<footer class="navybar"></footer>
+</body>
+</html>

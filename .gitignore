@@ -1,0 +1,51 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.local
+*.secret
+secrets/
+.claude/
+
+# Editors and operating systems
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*~
+*.swp
+*.swo
+
+# Windows download and endpoint-DLP sidecars
+*:Zone.Identifier
+*:sec.endpointdlp
+
+# Logs, temporary files, and generated test output
+*.log
+*.tmp
+*.temp
+tmp/
+temp/
+test-results/
+reports/
+artifacts/
+
+# Keep tenant-specific deployment records and exports out of source control
+deployment-record*
+usage-export*
+*tenant-export*
+
+# LIA e2e harness: tenant-specific lab values
+tests/e2e/lab.local.json

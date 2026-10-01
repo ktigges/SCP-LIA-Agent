@@ -1,0 +1,4 @@
+-r ../requirements.txt
+# Only needed for the LLM orchestrators (--agent claude / --agent azure-openai):
+anthropic>=1.8
+openai>=1.40

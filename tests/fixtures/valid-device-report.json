@@ -1,0 +1,160 @@
+{
+  "reportVersion": "1.0",
+  "generatedUtc": "2026-09-28T16:05:00Z",
+  "request": {
+    "entityType": "Device",
+    "entityValue": "WS-FIN-0142.contoso.com",
+    "startTime": "2026-09-27 08:00",
+    "endTime": "2026-09-27 14:00",
+    "timeZone": "America/Denver",
+    "workspace": "<DEFAULT_WORKSPACE>"
+  },
+  "scope": {
+    "canonicalEntity": {
+      "type": "Device",
+      "name": "ws-fin-0142.contoso.com",
+      "id": "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c"
+    },
+    "startTimeUtc": "2026-09-27T14:00:00Z",
+    "endTimeUtc": "2026-09-27T20:00:00Z",
+    "workspace": "<DEFAULT_WORKSPACE>",
+    "toolsRun": [
+      "resolve_device",
+      "get_source_coverage",
+      "get_device_timeline",
+      "get_related_alerts"
+    ]
+  },
+  "sectionOrder": [
+    "Executive Summary",
+    "Log Overview",
+    "Source Coverage and Query Status",
+    "Key Findings",
+    "Timeline of Notable Events",
+    "Extracted Entities",
+    "Security Observations",
+    "Potential Risks",
+    "Recommended Next Steps",
+    "Conclusion"
+  ],
+  "sections": {
+    "executiveSummary": [
+      {
+        "label": "Analytical observation",
+        "text": "The available records indicate one Defender alert and related process activity on ws-fin-0142 between 14:00Z and 20:00Z. DeviceRegistryEvents was unavailable, so registry activity could not be assessed."
+      }
+    ],
+    "logOverview": {
+      "recordCounts": [
+        {
+          "tool": "get_device_timeline",
+          "returned": 412,
+          "totalMatched": 412,
+          "truncated": false,
+          "limit": 2000
+        },
+        {
+          "tool": "get_related_alerts",
+          "returned": 1,
+          "totalMatched": 1,
+          "truncated": false,
+          "limit": 500
+        }
+      ]
+    },
+    "sourceCoverage": [
+      {
+        "source": "DeviceProcessEvents",
+        "tool": "get_device_timeline",
+        "status": "Observed",
+        "records": 230,
+        "analystMessage": "230 matching records returned."
+      },
+      {
+        "source": "DeviceFileEvents",
+        "tool": "get_device_timeline",
+        "status": "NotObserved",
+        "records": 0,
+        "reason": "Query succeeded with zero matching records visible to the caller",
+        "analystMessage": "Not observed in the provided log data"
+      },
+      {
+        "source": "DeviceRegistryEvents",
+        "tool": "get_device_timeline",
+        "status": "Unavailable",
+        "records": null,
+        "reason": "Table not found or not accessible in Advanced Hunting",
+        "analystMessage": "Source unavailable; registry activity was not assessed."
+      }
+    ],
+    "keyFindings": [
+      {
+        "label": "Observed fact",
+        "text": "Defender alert 'Suspicious PowerShell command line' (severity High) references ws-fin-0142.",
+        "citations": [
+          {
+            "timestampUtc": "2026-09-27T16:42:10Z",
+            "source": "AlertInfo",
+            "entity": "ws-fin-0142.contoso.com",
+            "action": "AlertGenerated",
+            "alertId": "da638000000000000000_1",
+            "sourceRecordId": "AlertInfo|da638000000000000000_1"
+          }
+        ],
+        "attackTechniques": [
+          {
+            "techniqueId": "T1059.001",
+            "supportingRecordIds": [
+              "AlertInfo|da638000000000000000_1"
+            ]
+          }
+        ]
+      }
+    ],
+    "timeline": [
+      {
+        "timestampUtc": "2026-09-27T16:42:10Z",
+        "localTime": "2026-09-27 10:42:10 MDT",
+        "source": "AlertInfo",
+        "action": "AlertGenerated",
+        "entity": "ws-fin-0142.contoso.com",
+        "sourceRecordId": "AlertInfo|da638000000000000000_1",
+        "alertId": "da638000000000000000_1"
+      }
+    ],
+    "extractedEntities": {
+      "devices": [
+        {
+          "value": "ws-fin-0142.contoso.com",
+          "sourceRecordIds": [
+            "AlertInfo|da638000000000000000_1"
+          ]
+        }
+      ]
+    },
+    "securityObservations": [
+      {
+        "label": "Analytical observation",
+        "text": "The encoded PowerShell execution is consistent with the alert's technique mapping and may warrant review."
+      }
+    ],
+    "potentialRisks": [
+      {
+        "label": "Analytical observation",
+        "text": "Because registry telemetry was unavailable, persistence via registry cannot be ruled in or out."
+      }
+    ],
+    "recommendedNextSteps": [
+      {
+        "label": "Suggested analyst action",
+        "text": "Review the full command line of the cited process record and confirm whether the activity was authorized."
+      }
+    ],
+    "conclusion": [
+      {
+        "label": "Analytical observation",
+        "text": "The available records support one alert-linked execution event; they do not establish compromise, and registry coverage is missing."
+      }
+    ]
+  }
+}

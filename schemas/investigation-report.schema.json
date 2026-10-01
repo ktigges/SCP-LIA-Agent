@@ -1,0 +1,736 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/lia/schemas/investigation-report.schema.json",
+  "title": "LIA SOC investigation report",
+  "description": "Structured form of the 10-section LIA report. Used to validate agent output during evaluation and by any export integration. Enforces statement labels, citations for observed facts, the five source statuses, and the restricted use of the phrase 'Not observed in the provided log data'.",
+  "type": "object",
+  "required": [
+    "reportVersion",
+    "generatedUtc",
+    "request",
+    "scope",
+    "sectionOrder",
+    "sections"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "reportVersion": {
+      "const": "1.0"
+    },
+    "generatedUtc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "request": {
+      "type": "object",
+      "required": [
+        "entityType",
+        "entityValue",
+        "startTime",
+        "endTime",
+        "timeZone"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "entityType": {
+          "enum": [
+            "Device",
+            "User",
+            "FileHash"
+          ]
+        },
+        "entityValue": {
+          "type": "string",
+          "minLength": 1
+        },
+        "startTime": {
+          "type": "string",
+          "minLength": 1
+        },
+        "endTime": {
+          "type": "string",
+          "minLength": 1
+        },
+        "timeZone": {
+          "type": "string",
+          "minLength": 1
+        },
+        "workspace": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "scope": {
+      "type": "object",
+      "required": [
+        "canonicalEntity",
+        "startTimeUtc",
+        "endTimeUtc",
+        "workspace",
+        "toolsRun"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "canonicalEntity": {
+          "type": "object",
+          "required": [
+            "type",
+            "name",
+            "id"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "enum": [
+                "Device",
+                "User",
+                "FileHash"
+              ]
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "additionalIdentifiers": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "startTimeUtc": {
+          "$ref": "#/$defs/utcTimestamp"
+        },
+        "endTimeUtc": {
+          "$ref": "#/$defs/utcTimestamp"
+        },
+        "workspace": {
+          "type": "string",
+          "minLength": 1
+        },
+        "toolsRun": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/toolName"
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "sectionOrder": {
+      "const": [
+        "Executive Summary",
+        "Log Overview",
+        "Source Coverage and Query Status",
+        "Key Findings",
+        "Timeline of Notable Events",
+        "Extracted Entities",
+        "Security Observations",
+        "Potential Risks",
+        "Recommended Next Steps",
+        "Conclusion"
+      ]
+    },
+    "sections": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "executiveSummary",
+        "logOverview",
+        "sourceCoverage",
+        "keyFindings",
+        "timeline",
+        "extractedEntities",
+        "securityObservations",
+        "potentialRisks",
+        "recommendedNextSteps",
+        "conclusion"
+      ],
+      "properties": {
+        "executiveSummary": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/statement"
+          }
+        },
+        "logOverview": {
+          "type": "object",
+          "required": [
+            "recordCounts"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "recordCounts": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "tool",
+                  "returned",
+                  "totalMatched",
+                  "truncated"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "tool": {
+                    "$ref": "#/$defs/toolName"
+                  },
+                  "returned": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "totalMatched": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": 0
+                  },
+                  "truncated": {
+                    "type": "boolean"
+                  },
+                  "limit": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": 0
+                  },
+                  "source": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "description": "Source table when counts are reported per source."
+                  }
+                }
+              }
+            },
+            "notes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "sourceCoverage": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/sourceStatus"
+          }
+        },
+        "keyFindings": {
+          "type": "array",
+          "description": "Every key finding cites timestamp, source, entity, action, and record/alert ID when available.",
+          "items": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/statement"
+              },
+              {
+                "required": [
+                  "citations"
+                ],
+                "properties": {
+                  "label": {
+                    "enum": [
+                      "Observed fact",
+                      "Analytical observation"
+                    ]
+                  },
+                  "citations": {
+                    "minItems": 1
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "timeline": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/timelineEntry"
+          }
+        },
+        "extractedEntities": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "users": {
+              "$ref": "#/$defs/entityList"
+            },
+            "devices": {
+              "$ref": "#/$defs/entityList"
+            },
+            "ipAddresses": {
+              "$ref": "#/$defs/entityList"
+            },
+            "domains": {
+              "$ref": "#/$defs/entityList"
+            },
+            "urls": {
+              "$ref": "#/$defs/entityList"
+            },
+            "files": {
+              "$ref": "#/$defs/entityList"
+            },
+            "sha256": {
+              "$ref": "#/$defs/entityList"
+            },
+            "processes": {
+              "$ref": "#/$defs/entityList"
+            },
+            "alerts": {
+              "$ref": "#/$defs/entityList"
+            }
+          }
+        },
+        "securityObservations": {
+          "type": "array",
+          "items": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/statement"
+              },
+              {
+                "properties": {
+                  "label": {
+                    "const": "Analytical observation"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "potentialRisks": {
+          "type": "array",
+          "items": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/statement"
+              },
+              {
+                "properties": {
+                  "label": {
+                    "const": "Analytical observation"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "recommendedNextSteps": {
+          "type": "array",
+          "items": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/statement"
+              },
+              {
+                "properties": {
+                  "label": {
+                    "const": "Suggested analyst action"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "conclusion": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/statement"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "utcTimestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,7})?Z$"
+    },
+    "toolName": {
+      "enum": [
+        "normalize_time_window",
+        "resolve_device",
+        "resolve_user",
+        "get_device_timeline",
+        "get_user_authentication_timeline",
+        "get_file_hash_activity",
+        "get_related_alerts",
+        "match_observed_indicators",
+        "get_source_coverage"
+      ]
+    },
+    "notObservedPhrase": {
+      "type": "string",
+      "pattern": "[Nn]ot observed in the provided log data"
+    },
+    "citation": {
+      "type": "object",
+      "required": [
+        "timestampUtc",
+        "source",
+        "entity",
+        "action"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "timestampUtc": {
+          "$ref": "#/$defs/utcTimestamp"
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Source table or tool name."
+        },
+        "entity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "action": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sourceRecordId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "alertId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "attackMapping": {
+      "type": "object",
+      "required": [
+        "techniqueId",
+        "supportingRecordIds"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "techniqueId": {
+          "type": "string",
+          "pattern": "^T[0-9]{4}(\\.[0-9]{3})?$"
+        },
+        "supportingRecordIds": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Records whose TechniqueId field contains this technique."
+        }
+      }
+    },
+    "statement": {
+      "type": "object",
+      "required": [
+        "label",
+        "text"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "enum": [
+            "Observed fact",
+            "Analytical observation",
+            "Suggested analyst action"
+          ]
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "citations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/citation"
+          }
+        },
+        "attackTechniques": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/attackMapping"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "label": {
+                "const": "Observed fact"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "citations"
+            ],
+            "properties": {
+              "citations": {
+                "minItems": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "label": {
+                "const": "Suggested analyst action"
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "required": [
+                "attackTechniques"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "sourceStatus": {
+      "type": "object",
+      "required": [
+        "source",
+        "tool",
+        "status",
+        "analystMessage"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tool": {
+          "$ref": "#/$defs/toolName"
+        },
+        "status": {
+          "enum": [
+            "Observed",
+            "NotObserved",
+            "Unavailable",
+            "AccessDenied",
+            "QueryFailed"
+          ]
+        },
+        "records": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "errorMessage": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "analystMessage": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "NotObserved"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "analystMessage": {
+                "const": "Not observed in the provided log data"
+              },
+              "records": {
+                "const": 0
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "analystMessage": {
+                "not": {
+                  "$ref": "#/$defs/notObservedPhrase"
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "Observed"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "records"
+            ],
+            "properties": {
+              "records": {
+                "minimum": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "AccessDenied",
+                  "QueryFailed"
+                ]
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "errorMessage"
+            ],
+            "properties": {
+              "errorMessage": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "Unavailable"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "reason"
+            ],
+            "properties": {
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "timelineEntry": {
+      "type": "object",
+      "required": [
+        "timestampUtc",
+        "source",
+        "action",
+        "entity"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "timestampUtc": {
+          "$ref": "#/$defs/utcTimestamp"
+        },
+        "localTime": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "action": {
+          "type": "string",
+          "minLength": 1
+        },
+        "entity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "details": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sourceRecordId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "alertId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "entityList": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "required": [
+          "value",
+          "sourceRecordIds"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "value": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sourceRecordIds": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    }
+  }
+}

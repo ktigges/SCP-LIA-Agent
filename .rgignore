@@ -1,0 +1,9 @@
+.venv/
+.git/
+.claude/
+__pycache__/
+*:Zone.Identifier
+*:sec.endpointdlp
+test-results/
+reports/
+artifacts/

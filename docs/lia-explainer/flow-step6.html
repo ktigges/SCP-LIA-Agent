@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<!--
+  Author: Kevin Tigges
+  Purpose: Plain-language, multi-page explanation of the LIA (Log Intelligence
+           Assistant) Security Copilot proof-of-concept -- what it is, what
+           its pieces do, and how a request actually flows through it.
+  Written for a reader with zero prior context on Security Copilot, agents,
+  or KQL -- every component is explained from scratch.
+  This page is self-contained: no external scripts, fonts, or network calls.
+  All styling is inline. Opening it does not transmit data anywhere or run
+  remote code.
+  Produced independently; not reviewed or endorsed by Microsoft.
+-->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LIA -- Step 6</title>
+
+<style>
+:root{
+  --navy:#0b2a4a; --royal:#1565c0; --blue:#0067b8; --ink:#1b2530; --muted:#5b6b7c; --line:#d9e1ea;
+  --panel:#f5f8fb; --good:#1a7f4e; --warn:#b25c00; --bad:#a32424;
+}
+*{box-sizing:border-box;}
+html,body{height:100%;}
+body{margin:0; background:#fff; color:var(--ink); display:flex; flex-direction:column; height:100vh; overflow:hidden;
+  font:15px/1.6 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+header.top{padding:26px 32px 0; }
+header.top h1{margin:0; font-size:24px; color:var(--navy); font-weight:700;}
+header.top .tag{font-size:12.5px; color:var(--muted); margin-top:2px;}
+nav.tabs{display:flex; gap:4px; padding:18px 32px 0; border-bottom:2px solid var(--line); flex-wrap:wrap;}
+nav.tabs a{color:var(--muted); text-decoration:none; font-size:13.5px; font-weight:700;
+  padding:10px 16px; border-bottom:3px solid transparent; margin-bottom:-2px;}
+nav.tabs a:hover{color:var(--navy);}
+nav.tabs a.active{color:var(--navy); border-bottom:3px solid var(--blue);}
+main{max-width:900px; margin:0 auto; padding:30px 24px 60px; flex:1 1 auto; min-height:0; overflow-y:auto; width:100%;}
+h1.page-title{font-size:26px; color:var(--navy); margin:0 0 4px;}
+.subtitle{color:var(--muted); font-size:14px; margin:0 0 22px;}
+h2{font-size:19px; margin:30px 0 8px; color:var(--navy); border-bottom:2px solid var(--line); padding-bottom:6px;}
+h2:first-of-type{margin-top:6px;}
+h3{font-size:15.5px; margin:18px 0 6px; color:var(--ink);}
+p{margin:8px 0;}
+.note{color:var(--muted); font-size:13.5px;}
+.callout{background:var(--panel); border-left:4px solid var(--blue); padding:13px 17px; margin:14px 0; border-radius:4px;}
+.analogy{background:#fbf6e8; border-left:4px solid #c8930a; padding:12px 16px; margin:12px 0; border-radius:4px; font-size:14px;}
+.analogy b{color:#7a5c00;}
+table{width:100%; border-collapse:collapse; margin:12px 0 22px; font-size:13.5px;}
+th,td{border:1px solid var(--line); padding:8px 10px; text-align:left; vertical-align:top;}
+th{background:var(--panel); color:var(--navy); font-weight:600;}
+code{background:var(--panel); border:1px solid var(--line); border-radius:3px; padding:1px 5px; font-size:12.5px;}
+ul{margin:8px 0; padding-left:22px;} li{margin:5px 0;}
+ol{margin:8px 0; padding-left:22px;} ol li{margin:5px 0;}
+.status-pill{display:inline-block; padding:2px 8px; border-radius:10px; font-size:12px; font-weight:600;}
+.status-good{background:#e4f3ea; color:var(--good);}
+.status-warn{background:#fdf0e0; color:var(--warn);}
+.status-bad{background:#fde8e8; color:var(--bad);}
+.comp-block{border:1px solid var(--line); border-radius:8px; padding:18px 20px; margin:18px 0; background:#fff;}
+.comp-block .num-badge{display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px;
+  border-radius:50%; background:var(--navy); color:#fff; font-size:13px; font-weight:700; margin-right:8px;}
+.comp-block h3{display:flex; align-items:center; margin:0 0 10px; font-size:17px; color:var(--navy);}
+.pagenav{display:flex; justify-content:space-between; margin-top:44px; border-top:1px solid var(--line); padding-top:16px; font-size:13.5px;}
+.pagenav a{color:var(--blue); text-decoration:none; font-weight:700;}
+.pagenav a:hover{text-decoration:underline;}
+svg.flowchart{width:100%; max-width:100%; height:auto; display:block; margin:14px 0 22px;}
+svg.flowchart a{cursor:pointer;}
+svg.flowchart a:hover rect{filter:brightness(0.96);}
+.flow-key{display:flex; gap:18px; flex-wrap:wrap; font-size:12.5px; color:var(--muted); margin:10px 0 4px;}
+.flow-key i{display:inline-block; width:12px; height:12px; border-radius:3px; margin-right:5px; vertical-align:-1px;}
+.step-badge{display:inline-flex; align-items:center; justify-content:center; width:34px; height:34px;
+  border-radius:50%; background:var(--navy); color:#fff; font-size:16px; font-weight:700; margin-right:10px;}
+svg.mini{width:100%; max-width:100%; height:auto; margin:10px 0 18px; display:block;}
+footer.navybar{background:var(--royal); color:#dbe6f2; padding:16px 32px; display:flex; justify-content:space-between;
+  align-items:center; flex-wrap:wrap; gap:10px; font-size:12px; margin-top:auto;}
+footer.navybar .disclaimer{max-width:680px; line-height:1.5;}
+footer.navybar .ms-logo{display:flex; align-items:center; gap:8px; font-weight:600; color:#fff;}
+.topbar{background:var(--royal); padding:10px 32px; display:flex; align-items:center; justify-content:flex-end;}
+.topbar .ms-logo{color:#fff;}
+.topbar .ms-logo span{color:#fff;}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <div class="ms-logo">
+    <svg width="20" height="20" viewBox="0 0 21 21" xmlns="http://www.w3.org/2000/svg"><rect x="1" y="1" width="9" height="9" fill="#f25022"/><rect x="11" y="1" width="9" height="9" fill="#7fba00"/><rect x="1" y="11" width="9" height="9" fill="#00a4ef"/><rect x="11" y="11" width="9" height="9" fill="#ffb900"/></svg>
+    <span>Microsoft</span>
+  </div>
+</div>
+<header class="top">
+  <h1>LIA -- Log Intelligence Assistant</h1>
+  <div class="tag">Security Copilot proof of concept</div>
+</header>
+<nav class="tabs">
+    <a href="index.html">Overview</a>
+    <a href="components.html">Components</a>
+    <a href="flow.html" class="active">Flow</a>
+    <a href="guardrails.html">Guardrails</a>
+    <a href="glossary.html">Glossary</a>
+</nav>
+<main>
+
+<h1 class="page-title"><span class="step-badge">6</span>Correlate</h1>
+<svg class="mini" viewBox="0 0 900 100" xmlns="http://www.w3.org/2000/svg">
+<defs><marker id="ah6" markerWidth="9" markerHeight="8" refX="8" refY="4" orient="auto"><polygon points="0 0, 9 4, 0 8" fill="#0b2a4a"/></marker></defs>
+<rect x="90" y="20" width="340" height="70" rx="7" fill="#f5f8fb" stroke="#0b2a4a" stroke-width="1.5"/>
+<circle cx="108" cy="38" r="12" fill="#0b2a4a"/><text x="108" y="42.5" text-anchor="middle" font-size="12.5" font-weight="700" fill="#fff">6</text>
+<text x="260.0" y="44" text-anchor="middle" font-size="13.5" font-weight="700" fill="#1b2530" font-family="-apple-system,Segoe UI,Arial,sans-serif">Correlate -- link rows only by</text>
+<text x="260.0" y="64" text-anchor="middle" font-size="13.5" font-weight="400" fill="#1b2530" font-family="-apple-system,Segoe UI,Arial,sans-serif">shared IDs or a stated time overlap</text>
+</svg>
+
+<p>This is the one step where the model is actually reasoning, instead of
+just running a fixed query and reporting what comes back.</p>
+<p>It's only allowed to connect two pieces of evidence if they genuinely
+share something concrete -- same device, same user, same IP address, same
+file, or a time overlap it can state in plain words. Anything looser than
+that gets labeled as an opinion, not a confirmed fact, in the report.</p>
+<p>Example: a sign-in from an unusual IP address, and a file download
+three minutes later from that same IP -- that's a fair correlation,
+because the IP address is shared and the timing is close. Two unrelated
+alerts that just happen to fall in the same 10-hour window, with nothing
+else connecting them, are not correlated -- they're reported separately.</p>
+
+
+<div class="pagenav"><a href="flow-step5.html">&larr; Step 5</a><a href="flow-step7.html">Step 7 &rarr;</a></div>
+</main>
+<footer class="navybar"></footer>
+</body>
+</html>

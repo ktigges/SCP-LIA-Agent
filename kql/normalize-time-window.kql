@@ -1,0 +1,57 @@
+// Tool: normalize_time_window
+// Parameters: {StartTimeLocal}, {EndTimeLocal}, {TimeZone}
+// Converts local times to UTC and validates interval (max 30 days).
+let StartLocalRaw = trim(@"\s", "{StartTimeLocal}");
+let EndLocalRaw = trim(@"\s", "{EndTimeLocal}");
+let TimeZoneRaw = trim(@"\s", "{TimeZone}");
+let MaxWindow = 30d;
+let FutureTolerance = 5m;
+let StartLocal = todatetime(StartLocalRaw);
+let EndLocal = todatetime(EndLocalRaw);
+let IsUtc = TimeZoneRaw in~ ("UTC", "Z", "Etc/UTC", "+00:00", "-00:00");
+let IsOffset = not(IsUtc) and TimeZoneRaw matches regex @"^[+-](0[0-9]|1[0-4]):[0-5][0-9]$";
+let IsIana = not(IsUtc) and not(IsOffset)
+             and array_length(split(TimeZoneRaw, "/")) between (2 .. 3)
+             and TimeZoneRaw matches regex @"^[A-Za-z]+(/[A-Za-z0-9_+\-]+)+$";
+let IsAbbrev = strlen(TimeZoneRaw) between (2 .. 5)
+               and TimeZoneRaw matches regex @"^[A-Za-z]+$" and not(IsUtc);
+let OffsetSign = iff(substring(TimeZoneRaw, 0, 1) == "-", -1, 1);
+let OffsetSpan = OffsetSign * (totimespan(strcat(substring(TimeZoneRaw, 1, 5), ":00")));
+let ToUtc = (local: datetime) {
+    case(IsUtc, local,
+         IsOffset, local - OffsetSpan,
+         IsIana, datetime_local_to_utc(local, TimeZoneRaw),
+         datetime(null))
+};
+let StartUtc = ToUtc(StartLocal);
+let EndUtc = ToUtc(EndLocal);
+// Round-trip check catches local times that do not exist (spring-forward gap).
+let RoundTripOk = not(IsIana)
+    or (datetime_utc_to_local(StartUtc, TimeZoneRaw) == StartLocal
+        and datetime_utc_to_local(EndUtc, TimeZoneRaw) == EndLocal);
+let FormatUtc = (d: datetime) {
+    strcat(format_datetime(d, "yyyy-MM-dd"), "T", format_datetime(d, "HH:mm:ss"), "Z")
+};
+let Status = case(
+    isempty(TimeZoneRaw), "MissingTimeZone",
+    IsAbbrev, "AmbiguousTimeZoneAbbreviation",
+    not(IsUtc or IsOffset or IsIana), "InvalidTimeZone",
+    // A trailing Z is accepted only when TimeZone is UTC; any other embedded offset
+    // conflicts with TimeZone and must be clarified.
+    (not(IsUtc) and (StartLocalRaw matches regex @"Z$" or EndLocalRaw matches regex @"Z$"))
+        or StartLocalRaw matches regex @"T?[0-9:]+[+-][0-9][0-9]:?[0-9][0-9]$"
+        or EndLocalRaw matches regex @"T?[0-9:]+[+-][0-9][0-9]:?[0-9][0-9]$", "TimeContainsOffset",
+    isnull(StartLocal) or isnull(EndLocal), "UnparseableTime",
+    isnull(StartUtc) or isnull(EndUtc), "InvalidTimeZone",
+    not(RoundTripOk), "NonexistentLocalTime",
+    EndUtc <= StartUtc, "EndNotAfterStart",
+    (EndUtc - StartUtc) > MaxWindow, "ExceedsMaxWindow",
+    EndUtc > now() + FutureTolerance, "EndInFuture",
+    "Valid");
+print Status = Status,
+      StartTimeUtc = iff(Status == "Valid", FormatUtc(StartUtc), ""),
+      EndTimeUtc = iff(Status == "Valid", FormatUtc(EndUtc), ""),
+      DurationMinutes = iff(isnotnull(StartUtc) and isnotnull(EndUtc), toint((EndUtc - StartUtc) / 1m), int(null)),
+      MaxWindowHours = toint(MaxWindow / 1h),
+      StartTimeLocal = StartLocalRaw, EndTimeLocal = EndLocalRaw, TimeZone = TimeZoneRaw,
+      SourceTable = "LIA_TIME"

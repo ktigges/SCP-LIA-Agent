@@ -1,0 +1,94 @@
+// Tool: get_source_coverage
+// Parameters: {EntityType}, {EntityIdentifier}, {StartTimeUtc}, {EndTimeUtc}, {Workspace}
+// Checks Defender and Sentinel table coverage for a device or user.
+let EntityTypeRaw = trim(@"\s", "{EntityType}");
+let InputRaw = trim(@"\s", "{EntityIdentifier}");
+let StartTimeUtc = todatetime("{StartTimeUtc}");
+let EndTimeUtc = todatetime("{EndTimeUtc}");
+let RequestedWorkspace = "{Workspace}";
+let MaxWindow = 24h;
+let DefenderRetention = 30d;          // Defender XDR native tables in Advanced Hunting
+let SentinelRetention = 30d;          // Security-Sentinel-LogWorkspace analytics-tier retention
+let UseSentinelSignInLogs = true;     // must match user-authentication-timeline.kql
+let IsDevice = EntityTypeRaw =~ "Device";
+let IsUser = EntityTypeRaw =~ "User";
+let IsDeviceId = strlen(InputRaw) == 40 and InputRaw matches regex @"^[0-9a-fA-F]+$";
+let IsUpn  = strlen(InputRaw) between (5 .. 256) and InputRaw matches regex @"^[A-Za-z0-9._%+'\-]+@[A-Za-z0-9.\-]+\.[A-Za-z][A-Za-z]+$";
+let IsSid  = array_length(split(InputRaw, "-")) between (3 .. 16) and InputRaw matches regex @"^S-1-[0-9]+(-[0-9]+)+$";
+let IsGuid = strlen(InputRaw) == 36
+             and substring(InputRaw, 8, 1) == "-" and substring(InputRaw, 13, 1) == "-"
+             and substring(InputRaw, 18, 1) == "-" and substring(InputRaw, 23, 1) == "-"
+             and InputRaw matches regex @"^[0-9a-fA-F-]+$";
+let GuardOk = isnotnull(StartTimeUtc) and isnotnull(EndTimeUtc)
+              and EndTimeUtc > StartTimeUtc
+              and (EndTimeUtc - StartTimeUtc) <= MaxWindow
+              and ((IsDevice and IsDeviceId) or (IsUser and (IsUpn or IsSid or IsGuid)));
+// Expected sources. Applicable = whether the supplied identifier type can be matched.
+let Expected = datatable(Source: string, ForEntity: string, Tier: string, Tool: string, Needs: string)
+[
+    "DeviceProcessEvents",             "Device", "Defender", "get_device_timeline",              "DeviceId",
+    "DeviceNetworkEvents",             "Device", "Defender", "get_device_timeline",              "DeviceId",
+    "DeviceFileEvents",                "Device", "Defender", "get_device_timeline",              "DeviceId",
+    "DeviceLogonEvents",               "Device", "Defender", "get_device_timeline",              "DeviceId",
+    "DeviceRegistryEvents",            "Device", "Defender", "get_device_timeline",              "DeviceId",
+    "DeviceEvents",                    "Device", "Defender", "get_device_timeline",              "DeviceId",
+    "AlertEvidence",                   "Device", "Defender", "get_related_alerts",               "DeviceId",
+    "SigninLogs",                      "User",   "Sentinel", "get_user_authentication_timeline", "UpnOrGuid",
+    "AADNonInteractiveUserSignInLogs", "User",   "Sentinel", "get_user_authentication_timeline", "UpnOrGuid",
+    "IdentityLogonEvents",             "User",   "Defender", "get_user_authentication_timeline", "Any",
+    "DeviceLogonEvents",               "User",   "Defender", "get_user_authentication_timeline", "Sid",
+    "AlertEvidence",                   "User",   "Defender", "get_related_alerts",               "Any"
+]
+| where (ForEntity == "Device" and IsDevice) or (ForEntity == "User" and IsUser)
+| where not(Source in ("SigninLogs", "AADNonInteractiveUserSignInLogs")) or UseSentinelSignInLogs
+| extend Applicable = case(
+    Needs == "DeviceId", IsDeviceId,
+    Needs == "UpnOrGuid", IsUpn or IsGuid,
+    Needs == "Sid", IsSid,
+    true);
+// One summarize per table; a present table always yields one row (count may be 0).
+let Counts =
+    union
+    (DeviceProcessEvents  | where TimeGenerated >= StartTimeUtc and TimeGenerated < EndTimeUtc | where GuardOk and IsDevice and DeviceId =~ InputRaw | summarize Records = count() | extend Source = "DeviceProcessEvents"),
+    (DeviceNetworkEvents  | where TimeGenerated >= StartTimeUtc and TimeGenerated < EndTimeUtc | where GuardOk and IsDevice and DeviceId =~ InputRaw | summarize Records = count() | extend Source = "DeviceNetworkEvents"),
+    (DeviceFileEvents     | where TimeGenerated >= StartTimeUtc and TimeGenerated < EndTimeUtc | where GuardOk and IsDevice and DeviceId =~ InputRaw | summarize Records = count() | extend Source = "DeviceFileEvents"),
+    (DeviceRegistryEvents | where TimeGenerated >= StartTimeUtc and TimeGenerated < EndTimeUtc | where GuardOk and IsDevice and DeviceId =~ InputRaw | summarize Records = count() | extend Source = "DeviceRegistryEvents"),
+    (DeviceEvents         | where TimeGenerated >= StartTimeUtc and TimeGenerated < EndTimeUtc | where GuardOk and IsDevice and DeviceId =~ InputRaw | summarize Records = count() | extend Source = "DeviceEvents"),
+    (DeviceLogonEvents    | where TimeGenerated >= StartTimeUtc and TimeGenerated < EndTimeUtc | where GuardOk and ((IsDevice and DeviceId =~ InputRaw) or (IsUser and IsSid and AccountSid =~ InputRaw)) | summarize Records = count() | extend Source = "DeviceLogonEvents"),
+    (AlertEvidence        | where TimeGenerated >= StartTimeUtc and TimeGenerated < EndTimeUtc | where GuardOk and ((IsDevice and DeviceId =~ InputRaw) or (IsUser and (AccountUpn =~ InputRaw or AccountSid =~ InputRaw or AccountObjectId =~ InputRaw))) | summarize Records = dcount(AlertId) | extend Source = "AlertEvidence"),
+    (SigninLogs           | where TimeGenerated >= StartTimeUtc and TimeGenerated < EndTimeUtc | where GuardOk and IsUser and (UserPrincipalName =~ InputRaw or UserId =~ InputRaw) | summarize Records = count() | extend Source = "SigninLogs"),
+    (AADNonInteractiveUserSignInLogs | where TimeGenerated >= StartTimeUtc and TimeGenerated < EndTimeUtc | where GuardOk and IsUser and (UserPrincipalName =~ InputRaw or UserId =~ InputRaw) | summarize Records = count() | extend Source = "AADNonInteractiveUserSignInLogs"),
+    (IdentityLogonEvents  | where TimeGenerated >= StartTimeUtc and TimeGenerated < EndTimeUtc | where GuardOk and IsUser and (AccountUpn =~ InputRaw or AccountObjectId =~ InputRaw or AccountSid =~ InputRaw) | summarize Records = count() | extend Source = "IdentityLogonEvents");
+let Report =
+    Expected
+    | lookup kind=leftouter (Counts | summarize Records = sum(Records) by Source) on Source
+    | extend TablePresent = isnotnull(Records),
+             RetentionStart = now() - iff(Tier == "Defender", DefenderRetention, SentinelRetention),
+             OutsideRetention = StartTimeUtc < now() - iff(Tier == "Defender", DefenderRetention, SentinelRetention)
+    | extend Status = case(
+                not(TablePresent), "Unavailable",
+                not(Applicable), "Unavailable",
+                Records > 0, "Observed",
+                OutsideRetention, "Unavailable",
+                "NotObserved"),
+             Reason = case(
+                not(TablePresent), "Table not found or not accessible in Advanced Hunting",
+                not(Applicable), strcat("Identifier type not supported by this table (requires ", Needs, ")"),
+                Records > 0 and OutsideRetention, "Records returned; part of the interval is outside retention",
+                Records > 0, "",
+                OutsideRetention, "Requested interval is outside the table's retention",
+                "Query succeeded with zero matching records visible to the caller")
+    | where GuardOk
+    | project SourceTable = Source, Tool, Tier, Status, Records = iff(TablePresent and Applicable, Records, long(null)),
+              Reason, RetentionStartUtc = RetentionStart;
+let Diagnostic =
+    print SourceTable = "LIA_GUARD", Tool = "get_source_coverage", Tier = "", Status = "QueryFailed",
+          Records = long(null),
+          Reason = "LIA guard: invalid EntityType/EntityIdentifier combination, unparseable time, EndTimeUtc not after StartTimeUtc, or interval exceeds MaxWindow",
+          RetentionStartUtc = datetime(null)
+    | where not(GuardOk);
+union Report, Diagnostic
+| extend EntityType = EntityTypeRaw, EntityIdentifier = InputRaw,
+         StartTimeUtc = StartTimeUtc, EndTimeUtc = EndTimeUtc,
+         Workspace = RequestedWorkspace
+| order by Tool asc, SourceTable asc

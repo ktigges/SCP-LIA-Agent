@@ -1,0 +1,98 @@
+// Tool: get_related_alerts
+// Parameters: {EntityIdentifier}, {StartTimeUtc}, {EndTimeUtc}, {Workspace}
+// Finds alerts tied to a device, user, or SHA256 during a UTC window.
+let InputRaw = trim(@"\s", "{EntityIdentifier}");
+let StartTimeUtc = todatetime("{StartTimeUtc}");
+let EndTimeUtc = todatetime("{EndTimeUtc}");
+let RequestedWorkspace = "{Workspace}";
+let MaxWindow = 30d;
+let MaxRecords = 25;
+let MaxDetailsChars = 512;
+let IsDeviceId = strlen(InputRaw) == 40 and InputRaw matches regex @"^[0-9a-fA-F]+$";
+let IsSha256 = strlen(InputRaw) == 64 and InputRaw matches regex @"^[0-9a-fA-F]+$";
+let IsUpn  = strlen(InputRaw) between (5 .. 256) and InputRaw matches regex @"^[A-Za-z0-9._%+'\-]+@[A-Za-z0-9.\-]+\.[A-Za-z][A-Za-z]+$";
+let IsSid  = array_length(split(InputRaw, "-")) between (3 .. 16) and InputRaw matches regex @"^S-1-[0-9]+(-[0-9]+)+$";
+let IsGuid = strlen(InputRaw) == 36
+             and substring(InputRaw, 8, 1) == "-" and substring(InputRaw, 13, 1) == "-"
+             and substring(InputRaw, 18, 1) == "-" and substring(InputRaw, 23, 1) == "-"
+             and InputRaw matches regex @"^[0-9a-fA-F-]+$";
+let GuardOk = isnotnull(StartTimeUtc) and isnotnull(EndTimeUtc)
+              and EndTimeUtc > StartTimeUtc
+              and (EndTimeUtc - StartTimeUtc) <= MaxWindow
+              and (IsDeviceId or IsSha256 or IsUpn or IsSid or IsGuid);
+let TechniqueIdsOf = (s: string) {
+    strcat_array(set_difference(extract_all(@"\b(T[0-9][0-9][0-9][0-9](?:\.[0-9][0-9][0-9])?)\b", s), dynamic([])), ",")
+};
+let MatchedEvidence = materialize(
+    AlertEvidence
+    | where TimeGenerated >= StartTimeUtc and TimeGenerated < EndTimeUtc
+    | where GuardOk
+    | where (IsDeviceId and DeviceId =~ InputRaw)
+         or (IsSha256 and SHA256 =~ InputRaw)
+         or (IsUpn and AccountUpn =~ InputRaw)
+         or (IsSid and AccountSid =~ InputRaw)
+         or (IsGuid and AccountObjectId =~ InputRaw)
+    | summarize EvidenceRoles = make_set(EvidenceRole, 10),
+                EvidenceEntityTypes = make_set(EntityType, 20),
+                EvidenceDevices = make_set_if(DeviceName, isnotempty(DeviceName), 20),
+                EvidenceAccounts = make_set_if(AccountUpn, isnotempty(AccountUpn), 20),
+                EvidenceIPs = make_set_if(RemoteIP, isnotempty(RemoteIP), 20),
+                EvidenceUrls = make_set_if(RemoteUrl, isnotempty(RemoteUrl), 20),
+                EvidenceFiles = make_set_if(FileName, isnotempty(FileName), 20),
+                EvidenceSHA256 = make_set_if(SHA256, isnotempty(SHA256), 20)
+        by AlertId
+    | take MaxRecords + 1
+);
+let MatchedIds = MatchedEvidence | project AlertId;
+let DefenderAlerts =
+    AlertInfo
+    | where TimeGenerated >= StartTimeUtc and TimeGenerated < EndTimeUtc
+    | where GuardOk
+    | where AlertId in (MatchedIds)
+    | summarize arg_max(TimeGenerated, Title, Category, Severity, ServiceSource,
+                        DetectionSource, AttackTechniques)
+        by AlertId
+    | lookup kind=leftouter MatchedEvidence on AlertId   // bounded: both sides <= MaxRecords + 1 rows
+    | project TimestampUtc = TimeGenerated, SourceTable = "AlertInfo",
+              EventCategory = "Alert", ActionType = "AlertGenerated",
+              User = strcat_array(EvidenceAccounts, ","),
+              Device = strcat_array(EvidenceDevices, ","),
+              IPAddress = "", RemoteUrl = "", RemoteDomain = "",
+              FileName = "", SHA256 = "", ProcessName = "", ParentProcessName = "",
+              AlertId, Severity = tostring(Severity),
+              TechniqueId = TechniqueIdsOf(tostring(AttackTechniques)),
+              SourceRecordId = strcat("AlertInfo|", AlertId),
+              Details = tostring(bag_pack(
+                  "Title", Title, "Category", Category,
+                  "ServiceSource", ServiceSource, "DetectionSource", DetectionSource,
+                  "AttackTechniques", AttackTechniques,
+                  "EvidenceRoles", EvidenceRoles, "EvidenceEntityTypes", EvidenceEntityTypes,
+                  "EvidenceIPs", EvidenceIPs, "EvidenceUrls", EvidenceUrls,
+                  "EvidenceFiles", EvidenceFiles, "EvidenceSHA256", EvidenceSHA256));
+let Alerts = materialize(DefenderAlerts);
+let TotalMatched = toscalar(Alerts | count);
+let Capped = materialize(
+    Alerts
+    | top MaxRecords by TimestampUtc asc
+    | extend Details = iff(strlen(Details) > MaxDetailsChars,
+                           strcat(substring(Details, 0, MaxDetailsChars), " ...[LIA: Details truncated]"),
+                           Details)
+);
+let Diagnostic =
+    print TimestampUtc = datetime(null), SourceTable = "LIA_GUARD",
+          EventCategory = "Diagnostic", ActionType = "",
+          User = "", Device = "", IPAddress = "", RemoteUrl = "", RemoteDomain = "",
+          FileName = "", SHA256 = "", ProcessName = "", ParentProcessName = "",
+          AlertId = "", Severity = "", TechniqueId = "", SourceRecordId = "",
+          Details = "LIA guard: invalid EntityIdentifier, unparseable time, EndTimeUtc not after StartTimeUtc, or interval exceeds MaxWindow"
+    | where not(GuardOk);
+union
+    Capped,
+    Diagnostic
+| extend TotalMatched = TotalMatched,
+         ReturnedLimit = MaxRecords,
+         // TotalMatched can undercount when more than MaxRecords+1 alerts match
+         // (evidence is capped first); Truncated remains correct in that case.
+         Truncated = TotalMatched > MaxRecords,
+         Workspace = RequestedWorkspace
+| order by TimestampUtc asc

@@ -1,0 +1,65 @@
+# =============================================================================
+# LIA - custom Microsoft Sentinel MCP tool collection, as a Security Copilot plugin
+#
+# STATUS: READY FOR TENANT CONFIGURATION AND TESTING.
+# Replace the endpoint placeholder and verify deployed tool names during the
+# plugin setup step in docs/deployment-guide.md.
+#
+# References (reviewed 2026-09-28):
+#   https://learn.microsoft.com/en-us/azure/sentinel/datalake/sentinel-mcp-use-tool-security-copilot
+#   https://learn.microsoft.com/en-us/copilot/security/plugin-mcp
+#   https://learn.microsoft.com/en-us/azure/sentinel/datalake/sentinel-mcp-create-custom-tool
+#
+# How to fill this in:
+#   1. In the Defender portal > Advanced hunting, save each kql/*.kql file with
+#      "Save as tool" into ONE new collection (for example "LIA").
+#   2. Name each tool exactly as listed in AllowedTools below (or update the list
+#      AND agent/lia-agent.yaml ChildSkills to match what you actually saved).
+#   3. Copy the collection's MCP endpoint URL into Endpoint.
+#   4. Upload: Security Copilot > Sources > Manage sources > Plugins > Custom >
+#      Add plugin > Security Copilot plugin.
+#
+# Notes from Microsoft documentation:
+#   - Descriptor.Name must equal the entry in the agent's RequiredSkillsets.
+#   - AllowedTools is an allowlist; tools not listed cannot be called.
+#   - Tools are not rediscovered automatically; re-upload after any tool change.
+#   - Tools with destructiveHint=true are not imported (LIA tools are read-only).
+#   - Only primitive input types are supported (all LIA parameters are strings).
+#   - One workspace per collection: tools query the collection's configured
+#     workspace; supporting more workspaces means one collection per workspace.
+#   - UsePluginAuth=false => calls run with the signed-in user's delegated token,
+#     so the analyst's own Defender/Sentinel permissions apply.
+#   - TokenScope 4500ebfb-89b6-4b14-a480-7f749797bfcd/.default is the documented
+#     Sentinel Platform Services scope; do not change it.
+# =============================================================================
+
+Descriptor:
+  Name: LIASentinelMCP
+  DisplayName: LIA Sentinel MCP Tools
+  Description: >-
+    Approved, read-only, parameterized KQL tools for the LIA investigation agent.
+  DescriptionForModel: >-
+    Read-only investigation tools for one device, one user, or one SHA256 over a bounded UTC
+    interval. normalize_time_window converts the analyst's local start and end
+    times to UTC and validates the interval; call it before any other tool.
+    resolve_device and resolve_user map an exact identifier to a
+    canonical identity. get_device_timeline returns Defender endpoint events for
+    one DeviceId. get_user_authentication_timeline returns sign-in and logon events
+    for one user. get_file_hash_activity finds where an exact SHA256 was observed
+    across all visible devices over a window of at most 30 days.
+    get_related_alerts returns Defender and Sentinel alerts whose
+    evidence references the entity. match_observed_indicators checks observed IPs,
+    domains, URLs and SHA256 hashes against threat intelligence. get_source_coverage
+    reports which expected tables exist and how many matching records each holds.
+    All tools require StartTimeUtc and EndTimeUtc as ISO 8601 UTC strings.
+
+SkillGroups:
+  - Format: MCP
+    Settings:
+      Endpoint: https://sentinel.microsoft.com/mcp/custom/LIA
+      TokenScope: 4500ebfb-89b6-4b14-a480-7f749797bfcd/.default
+      UseStreamableHttp: true
+      UsePluginAuth: false
+      # PLACEHOLDER: each name must exactly match a deployed tool name in the collection.
+      AllowedTools: normalize_time_window,resolve_device,resolve_user,get_device_timeline,get_user_authentication_timeline,get_file_hash_activity,get_related_alerts,match_observed_indicators,get_source_coverage
+      TimeoutInSeconds: 300
