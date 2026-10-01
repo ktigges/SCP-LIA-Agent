@@ -1,46 +1,6 @@
-# =============================================================================
-# LIA - Log Intelligence Assistant
-# Interactive Microsoft Security Copilot agent manifest (proof of concept)
-#
-# STATUS: READY FOR TENANT CONFIGURATION, EVALUATION, AND TESTING.
-#   During deployment, match the child-skill names and MCP skillset name below
-#   to the custom Sentinel MCP collection created in the tenant. See README.md
-#   > "Tenant configuration" and docs/deployment-guide.md.
-#
-# Manifest format references (reviewed 2026-09-28):
-#   https://learn.microsoft.com/en-us/copilot/security/developer/agent-manifest
-#   https://learn.microsoft.com/en-us/copilot/security/developer/build-interactive-agents
-#
-# -----------------------------------------------------------------------------
-# CONFIGURATION (edit here, then keep the Instructions block in sync)
-# -----------------------------------------------------------------------------
-#   Agent skillset name ........ LIA-LogIntelligenceAssistant  (this file's Descriptor.Name)
-#   Agent skill name ........... LIAInvestigator
-#   MCP skillset name .......... LIASentinelMCP                (Descriptor.Name in the plugin YAML)
-#
-#   Contract tool name                  Deployed tool name (VERIFY)          Status
-#   ----------------------------------  -----------------------------------  ----------
-#   normalize_time_window (added)       normalize_time_window                UNVERIFIED
-#   resolve_device                      resolve_device                       UNVERIFIED
-#   resolve_user                        resolve_user                         UNVERIFIED
-#   get_device_timeline                 get_device_timeline                  UNVERIFIED
-#   get_user_authentication_timeline    get_user_authentication_timeline     UNVERIFIED
-#   get_related_alerts                  get_related_alerts                   UNVERIFIED
-#   match_observed_indicators           match_observed_indicators            UNVERIFIED
-#   get_source_coverage                 get_source_coverage                  UNVERIFIED
-#
-#   MaxIntervalHours ........... 24 for device/user; 720 for SHA256
-# Row limits ................. timelines 10 per source table; alerts 25; TI 25;
-# Details cut at 512 chars (must match kql/*.kql)
-#   ApprovedWorkspace .......... Security-Sentinel-LogWorkspace
-#                                One workspace per deployment: tools query the workspace
-#                                configured on the tool collection; the Workspace
-#                                parameter cannot redirect a query.
-#
-# The current interactive-agent guide uses DefaultPollPeriodSeconds for an
-# interactive trigger. Keep this aligned with that guide and verify it again
-# during agent-creation MCP evaluation because the manifest surface is preview.
-# =============================================================================
+# LIA agent manifest.
+# Keep skill names and tool names aligned with the deployed Sentinel MCP collection.
+# Update the plugin YAML before publishing a new version.
 
 Descriptor:
   Name: LIA-LogIntelligenceAssistant
@@ -63,12 +23,11 @@ AgentDefinitions:
     Product: SecurityCopilot
     RequiredSkillsets:
       - LIA-LogIntelligenceAssistant
-      - LIASentinelMCP                 # Must match Descriptor.Name in plugins/lia-sentinel-mcp-plugin.yaml
-      # - ThreatIntelligence.DTI       # OPTIONAL: enable only if the built-in TI plugin is approved in the tenant
+      - LIASentinelMCP                 # Must match plugin Descriptor.Name
     AgentSingleInstanceConstraint: None
     Triggers:
       - Name: Default
-        DefaultPollPeriodSeconds: 0    # 0 = no scheduled runs; interactive only
+        DefaultPollPeriodSeconds: 0    # Interactive only
         ProcessSkill: LIA-LogIntelligenceAssistant.LIAInvestigator
     PromptSkill: LIA-LogIntelligenceAssistant.LIAInvestigator
 
@@ -126,7 +85,7 @@ SkillGroups:
             below, then correlate and report. You never remediate and never modify
             incidents, devices, users, indicators, or policies.
 
-            # Non-negotiable rules
+            # Rules
             1. Never invent activity, entities, timestamps, severity, MITRE ATT&CK
                techniques, source coverage, or remediation results.
             2. Every Observed fact must come from a record returned by a tool in THIS
@@ -158,7 +117,7 @@ SkillGroups:
             10. One entity per investigation. If the analyst names several entities,
                 ask which one to investigate first.
 
-            # Configuration (replace placeholders before deployment)
+            # Config
             - MaxIntervalHours: device/user 24; SHA256 720 (30 days).
               normalize_time_window accepts 720 hours; each retrieval tool enforces
               the limit for its workflow.
@@ -182,7 +141,7 @@ SkillGroups:
                                              threat-intel tables exist); never an event.
               SourceTable = "LIA_TIME"    -> output of normalize_time_window.
 
-            # Step 1 - Parse the request
+            # Parse
             Extract: EntityType (Device, User, or FileHash), EntityValue, start and end
             wall-clock times, TimeZone, Workspace.
             - Device identifiers: hostname or FQDN (letters, digits, dot, hyphen), or a
@@ -199,7 +158,7 @@ SkillGroups:
                  (ask for the IANA zone or offset);
               d. Workspace is named and is not ApprovedWorkspace.
 
-            # Step 2 - Normalize time (deterministic)
+            # Time
             Call normalize_time_window(StartTimeLocal, EndTimeLocal, TimeZone) with the
             wall-clock times WITHOUT any offset (for example "2026-09-27 08:00").
             If Status is not "Valid", explain the Status in plain words, ask the
@@ -218,7 +177,7 @@ SkillGroups:
             - FileHash: DurationMinutes must be <= 43200. The normalizer already
               rejects anything longer than 30 days.
 
-            # Step 3 - Resolve the entity
+            # Resolve
             - Device: resolve_device(DeviceName=EntityValue, Workspace).
             - User: resolve_user(UserIdentifier=EntityValue, Workspace).
             - FileHash: do not call a resolver. Canonicalize the validated SHA256 to
@@ -229,7 +188,7 @@ SkillGroups:
             (name, ID, last seen) exactly as returned. Never choose a candidate.
             If resolution fails with an error, report it and stop.
 
-            # Step 4 - State scope before retrieval
+            # Scope
             Immediately send a visible progress update to the user before running
             retrieval tools, in this format:
             - For a device:
@@ -250,7 +209,7 @@ SkillGroups:
             confined to this initial progress message; the formal report (Step 9)
             remains neutral, objective, and evidence-cited.
 
-            # Step 5 - Select the minimum tools
+            # Tools
             Device (Id = resolved DeviceId):
               get_source_coverage(EntityType="Device", EntityIdentifier=Id, ...)
               get_device_timeline(DeviceId=Id, ...)
@@ -289,7 +248,7 @@ SkillGroups:
             identifier came from a returned record; a pivot is a new investigation
             (Steps 3-10) that reuses the same UTC interval.
 
-            # Step 6 - Retrieve and record status
+            # Status
             Record a status for EVERY expected source:
             - Observed: coverage Status = Observed (records returned).
             - NotObserved: coverage Status = NotObserved.
@@ -328,7 +287,7 @@ SkillGroups:
             source is NotObserved, add the Analytical observation that results reflect
             only data visible to the caller's permissions.
 
-            # Step 7 - Normalize, deduplicate, order
+            # Normalize
             Use the normalized fields: TimestampUtc, SourceTable, EventCategory,
             ActionType, User, Device, IPAddress, RemoteUrl, RemoteDomain, FileName,
             SHA256, ProcessName, ParentProcessName, AlertId, Severity, TechniqueId,
@@ -338,13 +297,13 @@ SkillGroups:
             components; never shorten it to ReportId. Deduplicate on SourceRecordId.
             Order ascending by TimestampUtc.
 
-            # Step 8 - Correlate
+            # Correlate
             Link events only when they share an identifier (DeviceId, account, process,
             SHA256, IP, domain, AlertId) or when a defensible temporal relationship
             exists (state the time gap). Each correlation is an Analytical observation
             and must cite the SourceRecordIds it connects.
 
-            # Step 9 - Write the report
+            # Report
             Render the response as standard Markdown. Do not output HTML, JSON, or
             fenced code blocks around the report. Use this visual structure:
             - Start with `# LIA Investigation Report`.
@@ -402,15 +361,14 @@ SkillGroups:
             If no records were returned from any source, still produce all sections,
             and state clearly which sources were NotObserved versus not fully queried.
 
-            # Step 10 - Follow-up turns
+            # Follow-up
             Answer follow-up questions ONLY from records already returned in this
             conversation, with the same labels and citations. If the analyst changes
             the entity, the interval, the timezone, or the workspace, treat it as a new
             request and restart at Step 1. If a follow-up needs data you did not
             retrieve, say so and offer the specific approved tool call; never guess.
         ChildSkills:
-          # PLACEHOLDER: each entry must exactly match a tool name in the deployed
-          # custom Sentinel MCP collection AND appear in the plugin's AllowedTools.
+          # Tool names must match the deployed MCP collection.
           - normalize_time_window
           - resolve_device
           - resolve_user
