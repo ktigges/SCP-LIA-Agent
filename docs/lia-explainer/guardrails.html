@@ -114,8 +114,9 @@ matter what.</p>
 </table>
 
 <h2>How each data source gets graded</h2>
-<p>This part took some real thought -- "no results" can mean five different
-things, and the report needs to say which one it actually was.</p>
+<p>Each data source reports a status, not just its results. This lets LIA
+distinguish an empty search from missing data, denied access, or a failed
+query, and explain the difference in the report.</p>
 <table>
 <tr><th>Label</th><th>What it means in plain terms</th></tr>
 <tr><td><span class="status-pill status-good">Observed</span></td><td>The search ran fine and found matching records.</td></tr>
